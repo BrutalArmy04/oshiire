@@ -1,0 +1,40 @@
+# === Oshiire: secrets & personal data — MUST stay out of git ===
+
+# Reddit API credentials and any other secrets.
+# These never get committed. Losing this line = burned secret.
+.env
+.env.*
+!.env.example
+*.secret
+praw.ini
+
+# Personal data derived from YOUR Reddit account.
+# The manifest holds your saved-post titles/URLs; the folders hold your images.
+# None of this belongs in a remote, even a private one.
+staging/
+archive/
+manifest.json
+*.manifest.json
+
+# AI model weights — large binaries, don't want them in git regardless.
+*.onnx
+*.pt
+*.pth
+models/
+
+# === Standard Python ===
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# === OS / editor cruft ===
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
