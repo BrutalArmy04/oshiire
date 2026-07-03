@@ -70,9 +70,14 @@ Slice 0, extended by later slices:
   "prefer-original-source" step parses those ids from the title, so no
   `source_link` field is needed.)
 - `local_path`, `fetched_at` — set by Slice 0.
-- `status` — one of: `pending_review`, `approved`, `rejected`, `skipped`,
-  `download_failed`.
-- `skip_reason` — why a `skipped` entry was skipped. Null otherwise.
+- `status` — one of: `pending_review` (awaiting review, or Skipped for later),
+  `approved` (Accepted in review; awaits Slice 3's move to the archive),
+  `rejected` (Rejected in review; staging file deleted, record kept for dedup),
+  `download_failed`, `skipped` (auto-skipped at ingest, e.g. non-image).
+  Note: a user Skip in the review UI does NOT change status — it stays
+  `pending_review` so the entry returns next session. `skipped` is only the
+  ingest-time auto-skip.
+- `skip_reason` — why an entry was auto-`skipped` at ingest. Null otherwise.
 
 Added by Slice 1 (metadata tagging):
 - `franchise` — a **list** of source works (e.g. `["Genshin Impact"]`,
@@ -142,6 +147,32 @@ reprocessable so a later slice (e.g. gallery support) can retry them.
 - Do NOT overfit the title parser. A good first guess plus honest `Unknown` is
   the goal — the Slice 2 human review closes the gap in two clicks.
 
+## Review UI rules (Slice 2)
+- Gradio app. Reads `manifest.json` fresh on launch, filters to
+  `pending_review`, presents them ONE AT A TIME in chronological (as-saved)
+  order. No grid.
+- Reuses `manifest.py`'s load + atomic save. The UI must NOT reimplement manifest
+  writing.
+- Per image, displays: the image (from `local_path`), title, subreddit, a
+  clickable permalink, and read-only `guess_confidence`/`guess_source` as
+  context. Editable: `character_guess` (list), `franchise` (list), and a
+  `crossover` checkbox. Editing any of these before Accept sets
+  `guess_source: "manual"`.
+- Three actions:
+  - **Skip** → leaves `status: "pending_review"`, keeps the file. Returns next
+    session. (Does not write a `skipped` status — that value is ingest-only.)
+  - **Reject** → `status: "rejected"`, DELETES the staging file. Manifest record
+    stays so dedup never re-downloads it.
+  - **Accept** → `status: "approved"`, KEEPS the file in staging. Records the
+    human-confirmed character(s)/franchise(s)/crossover. Does NOT move the file —
+    the physical move to the sorted archive is Slice 3.
+- Only Reject deletes a file. Provide an **Undo last action** that reverts the
+  previous Skip/Reject/Accept (including restoring a just-deleted file), since
+  Reject is destructive.
+- INVARIANT: the UI makes no network calls and does no downloading. It only reads
+  images, reads/writes the manifest, and (on Reject) deletes staging files.
+- Show a clear "all reviewed" state when no `pending_review` entries remain.
+
 ## Build order (build vertically, one slice per session)
 0. Read `REDDIT_SAVED_FEED_URL`, fetch + parse the saved feed with feedparser,
    extract the direct image + metadata per the manifest schema above, download
@@ -153,7 +184,9 @@ reprocessable so a later slice (e.g. gallery support) can retry them.
 1. Metadata tagging: set `franchise`, `character_guess` (list), `guess_confidence`,
    `guess_source` per the rules above, driven by an editable `subreddit_map.json`.
    Pure/deterministic; runs over existing manifest entries.
-2. Gradio review UI reading the manifest; wired to the stubbed guesser.
+2. Gradio review UI per "Review UI rules" above: one-at-a-time, chronological,
+   Skip/Reject/Accept + Undo, editable character/franchise/crossover. Sets status
+   only — no file moving (that's Slice 3). Reject deletes the staging file.
 3. Archiving: on approval, move file to `archive/<character>/`.
 4. Swap the stub for the WD14 tagger behind the same `guess_character` seam.
 5. (Optional, last) Packaging. Do NOT design earlier slices around PyInstaller.
