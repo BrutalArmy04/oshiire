@@ -55,12 +55,104 @@ Full design: see `docs/blueprint.md`.
 - The UI process makes no network calls and does no downloading. It only reads
   images from `staging/`, reads/writes the manifest, and moves files on approval.
 
+## Manifest schema (defined once, reused everywhere)
+Each entry is keyed by the stable Reddit fullname (`t3_...`). Fields as built in
+Slice 0, extended by later slices:
+- `post_id` — stable Reddit fullname (`t3_...`); the dedup key.
+- `title` — post title.
+- `subreddit` — source subreddit.
+- `permalink` — the Reddit post URL.
+- `image_url` — the direct reddit-hosted image (i.redd.it etc.). What Slice 0
+  downloads. (Note: the earlier `reddit_image_url`/`source_link` split was NOT
+  built — Slice 0 shipped a single `image_url`. In practice the "original
+  source" is not a clean outbound link anyway; it's a pixiv/image id embedded in
+  the title, e.g. `(pixiv 18567314)` or `[i: 146619696]`. A future
+  "prefer-original-source" step parses those ids from the title, so no
+  `source_link` field is needed.)
+- `local_path`, `fetched_at` — set by Slice 0.
+- `status` — one of: `pending_review`, `approved`, `rejected`, `skipped`,
+  `download_failed`.
+- `skip_reason` — why a `skipped` entry was skipped. Null otherwise.
+
+Added by Slice 1 (metadata tagging):
+- `franchise` — a **list** of source works (e.g. `["Genshin Impact"]`,
+  `["Azure Lane"]`, `["VTuber"]`). May be set even when the character is
+  Unknown — franchise is a valid fallback sort dimension, and it scopes the
+  Slice 4 AI tagger to a character roster (big accuracy win). See the
+  franchise/crossover/collab rules below for how the list is populated.
+- `crossover` — boolean. `true` when the image mixes characters from unrelated
+  franchises in fan art (no official relationship). Drives Slice 3 routing (see
+  below). Default `false`.
+- `character_guess` — a **list** of names (supports group shots); `["Unknown"]`
+  when unresolved.
+- `guess_confidence` — rough score: high (character-specific subreddit match),
+  medium (parsed from title), low/zero (Unknown).
+- `guess_source` — `"subreddit"`, `"title"`, `"ai"` (Slice 4), or `"manual"`
+  (edited in the UI).
+
+**Slice 3 routing precedence (decided now, built later):**
+`crossover: true` → the file goes to a dedicated crossover folder, regardless of
+`franchise`. Otherwise route normally (by character/franchise). The `franchise`
+list on a crossover entry is metadata for search/filter only — it does NOT split
+the file across franchise folders.
+
+**Dedup rule:** skip a post when it already exists in the manifest in a *handled*
+state (downloaded or `skipped`) — not merely "seen." Keep `skipped` entries
+reprocessable so a later slice (e.g. gallery support) can retry them.
+
+## Metadata tagging rules (Slice 1)
+- Signal priority: character-specific subreddit (highest) → franchise subreddit
+  + title parse → Unknown.
+- `subreddit_map.json` is an editable lookup, seeded from real saves. Each sub
+  maps to a `franchise` and optionally a `character` (when the sub is
+  character-specific). New subs get added here, not hardcoded.
+- Subreddit patterns: strip `Mains` suffix (`AyakaMains` → Ayaka); strip known
+  prefixes (`ChurchOf`, `OneTrue`).
+- Title parsing for franchise subs: strip trailing parenthetical artist credits
+  `(@handle)`, `(pixiv ...)`, `(alias)`; strip Reddit meta-tags `[Media]`,
+  `[Discussion]`; extract names from `[...]` or leading position. `[original]`
+  is a signal → tag Unknown (it's an OC).
+- Group shots: names joined by `and` / `&` / commas → store all in the
+  `character_guess` list. Group shots are ~20% of real saves, not an edge case.
+
+### Franchise, crossover, and collab (franchise is a LIST)
+- **VTuber is a valid franchise, not noise.** For VTuber art, the franchise IS
+  "VTuber" (or the specific agency when known — "Hololive", "Nijisanji"; prefer
+  the agency, fall back to generic "VTuber"). Do NOT strip `[VTuber]` as a
+  meta-tag. AZKi → `["Hololive"]` is the same idea at higher precision.
+- **Collab (official dual-membership), context-driven — no knowledge base:**
+  a character officially licensed into another game belongs to BOTH its home
+  franchise and the collab franchise. The signal is the SUBREDDIT: if a
+  character's parsed home franchise differs from the subreddit's mapped
+  franchise, include both in the `franchise` list. Example: 2B posted on
+  r/AzureLane → `["NieR: Automata", "Azure Lane"]`; the same 2B art on any other
+  sub → `["NieR: Automata"]` only. The subreddit is the collab evidence, so no
+  `collabs.json` is needed. (Note: the home franchise for a title-named
+  character often isn't known at metadata time — it may resolve at the Slice 4
+  AI step or in the review UI. That's fine; tag what's knowable now.)
+  Collab entries are NOT crossovers: `crossover` stays `false`, and they route
+  normally in Slice 3.
+- **Crossover (fan art mixing unrelated sources):** when characters from
+  different franchises appear together with no official relationship (e.g.
+  `Acheron & Raiden Shogun Ei` = Honkai + Genshin), set `crossover: true`. The
+  `franchise` list is the UNION of every character's home franchise
+  (`["Honkai: Star Rail", "Genshin Impact"]`), kept searchable. Each character
+  still keeps its own real franchise — never invent a fake "crossover" franchise
+  value. Routing to the crossover folder is driven by the flag, not the list.
+- Do NOT overfit the title parser. A good first guess plus honest `Unknown` is
+  the goal — the Slice 2 human review closes the gap in two clicks.
+
 ## Build order (build vertically, one slice per session)
 0. Read `REDDIT_SAVED_FEED_URL`, fetch + parse the saved feed with feedparser,
-   extract image URLs and metadata (title, subreddit, link, post id), download
-   images to `staging/`, write manifest entries as `pending_review`. Skip posts
-   already in the manifest. No AI, no UI, no archiving.
-1. Metadata tagging (title/subreddit -> guess). Pure, deterministic.
+   extract the direct image + metadata per the manifest schema above, download
+   from `reddit_image_url` into `staging/`, write entries as `pending_review`.
+   Record (don't act on) `source_link`. Non-image/gallery/link posts get a
+   `skipped` entry with a `skip_reason`. Skip anything already handled in the
+   manifest. Manifest lives at `staging/manifest.json`. No AI, no UI, no
+   archiving.
+1. Metadata tagging: set `franchise`, `character_guess` (list), `guess_confidence`,
+   `guess_source` per the rules above, driven by an editable `subreddit_map.json`.
+   Pure/deterministic; runs over existing manifest entries.
 2. Gradio review UI reading the manifest; wired to the stubbed guesser.
 3. Archiving: on approval, move file to `archive/<character>/`.
 4. Swap the stub for the WD14 tagger behind the same `guess_character` seam.
