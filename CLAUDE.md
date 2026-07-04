@@ -73,9 +73,7 @@ Slice 0, extended by later slices:
 - `status` — one of: `pending_review` (awaiting review, or Skipped for later),
   `approved` (Accepted in review; awaits Slice 3's move to the archive),
   `rejected` (Rejected in review; staging file deleted, record kept for dedup),
-  `download_failed`, `skipped` (auto-skipped at ingest, e.g. non-image),
-  `archived` (Slice 3a moved the file into `ARCHIVE_DIR`; terminal state, never
-  reprocessed by `archive.py`).
+  `download_failed`, `skipped` (auto-skipped at ingest, e.g. non-image).
   Note: a user Skip in the review UI does NOT change status — it stays
   `pending_review` so the entry returns next session. `skipped` is only the
   ingest-time auto-skip.
@@ -96,25 +94,6 @@ Added by Slice 1 (metadata tagging):
   medium (parsed from title), low/zero (Unknown).
 - `guess_source` — `"subreddit"`, `"title"`, `"ai"` (Slice 4), or `"manual"`
   (edited in the UI).
-
-Added by Slice 3a (archive routing engine):
-- `archive_path` — set when `status` becomes `archived`. The destination path
-  the file was moved to, relative to `ARCHIVE_DIR`, POSIX-style.
-- `archived_at` — UTC timestamp of the `--apply` move.
-- `archive_flag` — set only on entries `archive.py` couldn't route (stays
-  `approved`, not moved): one of `needs_folder` (nested franchise resolved but
-  no character subfolder matched — Slice 3b offers create-folder), `needs_shortname`
-  (franchise didn't resolve via `franchise_aliases`/`franchises` and has no
-  entry in the shortname file — Slice 3b offers propose-shortname),
-  `no_folder_alias` (an explicit `null` in `franchise_aliases` — no folder
-  exists yet), or `missing_directory` (the computed destination doesn't exist
-  on disk; `archive.py` never creates directories). Null/absent when unset.
-- `archive_flag_detail` — human-readable reason paired with `archive_flag`.
-- `archive_flag_at` — UTC timestamp of when the flag was recorded.
-  These three are only written by `--apply` (dry-run writes nothing) and are
-  cleared if the entry later routes successfully. This is the seam Slice 3b
-  reads from — it filters the manifest for entries with `archive_flag` set
-  rather than re-running routing logic itself.
 
 **Slice 3 routing precedence (decided now, built later):**
 `crossover: true` → the file goes to a dedicated crossover folder, regardless of
@@ -199,10 +178,24 @@ Split into two slices:
 - **3a — routing engine + `layout.json`.** Given an `approved` entry whose
   decisions are already made, move its staging file to the correct archive
   location. Pure filing logic driven by config. Build/verify this first.
-- **3b — review-UI decisions that feed 3a.** Adds to the Slice 2 UI: a
-  "create folder" button for unmatched characters, shortname proposal, wallpaper
-  selection, and character-alias resolution — all optional, per image, written
-  to the manifest for 3a to execute.
+- **3b — review-UI decisions that feed 3a.** Adds controls to the Slice 2 UI,
+  all optional/per-image, written to the manifest for 3a to execute:
+  - **Same-series group** checkbox — forces `Others_Group` routing for a nested
+    franchise regardless of how many names are listed. This is the explicit way
+    to mark a group; do NOT rely on a magic "Group" string typed into the
+    character list (that's fragile). Group intent is either this checkbox or a
+    multi-name `character_guess`, never a sentinel string. (If a nested entry has
+    a single unmatched character like the literal "Group", 3a correctly flags it
+    for review rather than guessing — the fix is this checkbox or real names.)
+  - **Create folder** button — for an unmatched character in a nested franchise,
+    lets the user explicitly create the subfolder. New folders come ONLY from
+    this click, never from a guess.
+  - **Shortname proposal** — for a known series with no shortname yet, propose one
+    (derived from the series name) for the user to confirm/edit; writes it to the
+    shortname file.
+  - **Wallpaper** selection — none / PC / phone / both (see below).
+  - **Character-alias resolution** — let the user map a tagged name to an existing
+    folder name, persisting the alias to `layout.json`.
 
 Config files:
 - `layout.json` — the user's PERSONAL archive layout. **Gitignored.** Describes

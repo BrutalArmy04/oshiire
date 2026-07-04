@@ -44,6 +44,8 @@ def _snapshot(entry):
         "character_guess": list(entry.get("character_guess", [])),
         "franchise": list(entry.get("franchise", [])),
         "crossover": entry.get("crossover", False),
+        "same_series_group": entry.get("same_series_group", False),
+        "wallpaper": entry.get("wallpaper", "none"),
         "guess_source": entry.get("guess_source"),
     }
 
@@ -64,6 +66,8 @@ def _render_current():
             "",
             "",
             False,
+            False,
+            "none",
             gr.update(interactive=last_action is not None),
         )
 
@@ -81,6 +85,8 @@ def _render_current():
     character_text = "\n".join(entry.get("character_guess", []))
     franchise_text = "\n".join(entry.get("franchise", []))
     crossover_value = bool(entry.get("crossover", False))
+    same_series_group_value = bool(entry.get("same_series_group", False))
+    wallpaper_value = entry.get("wallpaper", "none")
 
     return (
         header,
@@ -91,6 +97,8 @@ def _render_current():
         character_text,
         franchise_text,
         crossover_value,
+        same_series_group_value,
+        wallpaper_value,
         gr.update(interactive=last_action is not None),
     )
 
@@ -131,7 +139,7 @@ def on_reject():
     return _render_current()
 
 
-def on_accept(character_text, franchise_text, crossover_value):
+def on_accept(character_text, franchise_text, crossover_value, same_series_group_value, wallpaper_value):
     global current_index, last_action
     entry = _current_entry()
     if entry is None:
@@ -141,7 +149,11 @@ def on_accept(character_text, franchise_text, crossover_value):
     new_characters = _parse_lines(character_text)
     new_franchise = _parse_lines(franchise_text)
     new_crossover = bool(crossover_value)
+    new_same_series_group = bool(same_series_group_value)
+    new_wallpaper = wallpaper_value or "none"
 
+    # same_series_group/wallpaper are routing hints, not identity edits --
+    # they don't flip guess_source to "manual".
     edited = (
         new_characters != prior["character_guess"]
         or new_franchise != prior["franchise"]
@@ -151,6 +163,8 @@ def on_accept(character_text, franchise_text, crossover_value):
     entry["character_guess"] = new_characters
     entry["franchise"] = new_franchise
     entry["crossover"] = new_crossover
+    entry["same_series_group"] = new_same_series_group
+    entry["wallpaper"] = new_wallpaper
     if edited:
         entry["guess_source"] = "manual"
     entry["status"] = "approved"
@@ -205,6 +219,10 @@ with gr.Blocks(title="Oshiire review") as demo:
                 character_box = gr.Textbox(label="Character guess (one per line)", lines=3)
                 franchise_box = gr.Textbox(label="Franchise (one per line)", lines=2)
                 crossover_box = gr.Checkbox(label="Crossover")
+                same_series_group_box = gr.Checkbox(label="Same-series group")
+                wallpaper_box = gr.Radio(
+                    choices=["none", "pc", "phone", "both"], value="none", label="Wallpaper"
+                )
 
                 with gr.Row():
                     skip_btn = gr.Button("Skip")
@@ -222,13 +240,19 @@ with gr.Blocks(title="Oshiire review") as demo:
         character_box,
         franchise_box,
         crossover_box,
+        same_series_group_box,
+        wallpaper_box,
         undo_btn,
     ]
 
     demo.load(fn=_render_current, outputs=outputs)
     skip_btn.click(fn=on_skip, outputs=outputs)
     reject_btn.click(fn=on_reject, outputs=outputs)
-    accept_btn.click(fn=on_accept, inputs=[character_box, franchise_box, crossover_box], outputs=outputs)
+    accept_btn.click(
+        fn=on_accept,
+        inputs=[character_box, franchise_box, crossover_box, same_series_group_box, wallpaper_box],
+        outputs=outputs,
+    )
     undo_btn.click(fn=on_undo, outputs=outputs)
 
 

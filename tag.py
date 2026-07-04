@@ -34,16 +34,19 @@ def print_table(entries) -> None:
         print(" | ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)))
 
 
-def main() -> None:
-    manifest = load_manifest()
-
+def run_tagging(manifest: dict) -> list:
     tagged = []
     for entry in manifest.values():
         if entry.get("status") != "pending_review":
             continue
         tag_entry(entry)
         tagged.append(entry)
+    return tagged
 
+
+def main() -> None:
+    manifest = load_manifest()
+    tagged = run_tagging(manifest)
     save_manifest(manifest)
     print_table(tagged)
     print(f"tagged={len(tagged)}")

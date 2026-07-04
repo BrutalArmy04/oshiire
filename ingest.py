@@ -13,6 +13,7 @@ import requests
 from dotenv import load_dotenv
 
 from manifest import load_manifest, save_manifest
+from tag import run_tagging
 
 STAGING_DIR = Path("staging")
 USER_AGENT = "oshiire:v0.1 (personal saved-feed archiver by /u/BrutalArmy)"
@@ -148,8 +149,10 @@ def main():
             }
             failed += 1
 
+    tagged = run_tagging(manifest)
+
     save_manifest(manifest)
-    print(f"downloaded={downloaded} skipped={skipped} failed={failed}")
+    print(f"downloaded={downloaded} skipped={skipped} failed={failed} tagged={len(tagged)}")
 
 
 if __name__ == "__main__":

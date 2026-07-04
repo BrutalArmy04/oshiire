@@ -114,7 +114,8 @@ def route_entry(entry: dict, layout: dict, shortname_map: dict) -> RouteResult:
                 return RouteResult("move", folder_name, note=note)
 
             if style == "nested":
-                if len(character_list) >= 2:
+                same_series_group = entry.get("same_series_group", False)
+                if same_series_group or len(character_list) >= 2:
                     group_dir = f"{folder_name}/{layout['group_subfolder']}"
                     return RouteResult("move", group_dir, note=note)
 
@@ -129,8 +130,8 @@ def route_entry(entry: dict, layout: dict, shortname_map: dict) -> RouteResult:
                     flag_detail=f"No subfolder for character '{char_name}' in {folder_name}",
                 )
 
-        # Unmapped (or aliased to a folder that isn't defined) -> try the
-        # shortname file before giving up.
+        # Unmapped (or aliased/identity to a folder that isn't defined) -> try
+        # the shortname file before giving up.
         shortname = lookup_shortname(primary_franchise, shortname_map)
         if shortname:
             return RouteResult(
@@ -138,6 +139,13 @@ def route_entry(entry: dict, layout: dict, shortname_map: dict) -> RouteResult:
                 special["others_known_series"],
                 filename_suffix=shortname,
                 note="shortname",
+            )
+
+        if status == "unmapped":
+            return RouteResult(
+                "flag",
+                flag_reason="unresolved_franchise",
+                flag_detail=f"Franchise '{primary_franchise}' has no folder or alias configured in layout.json",
             )
 
         return RouteResult(
@@ -181,6 +189,7 @@ def plan_moves(manifest: dict, layout: dict, shortname_map: dict, archive_dir: P
     one approved entry's planned outcome; nothing here touches disk."""
     rows = []
     skipped_status_counts = {}
+    special = layout["special_folders"]
 
     for post_id, entry in manifest.items():
         status = entry.get("status")
@@ -255,6 +264,57 @@ def plan_moves(manifest: dict, layout: dict, shortname_map: dict, archive_dir: P
             "dest_rel": f"{result.dest_dir}/{dest_filename}",
         })
 
+        # Wallpaper copies ride alongside a successful move only -- a flagged
+        # or missing-file entry has no fixed archive location yet to copy
+        # from, so wallpaper copying waits for a future run once it's routed.
+        wallpaper = entry.get("wallpaper", "none")
+        wallpaper_targets = []
+        if wallpaper in ("pc", "both"):
+            wallpaper_targets.append(("pc", special["wallpaper_pc"]))
+        if wallpaper in ("phone", "both"):
+            wallpaper_targets.append(("phone", special["wallpaper_phone"]))
+
+        for target_name, target_folder in wallpaper_targets:
+            wp_dir = archive_dir / special["wallpaper_root"] / target_folder
+            wp_dir_rel = f"{special['wallpaper_root']}/{target_folder}"
+
+            if not wp_dir.exists():
+                rows.append({
+                    "post_id": post_id,
+                    "entry": entry,
+                    "outcome": "copy_missing_directory",
+                    "franchise": entry.get("franchise") or [],
+                    "characters": entry.get("character_guess") or [],
+                    "dest_display": "-",
+                    "note": f"wallpaper dir missing: {wp_dir_rel}/",
+                })
+                continue
+
+            wp_filename, wp_collided = _avoid_collision(wp_dir, dest_filename)
+            wp_note_parts = [f"wallpaper copy ({target_name})"]
+            if wp_collided:
+                wp_note_parts.append(f"renamed to avoid overwriting existing '{dest_filename}'")
+
+            rows.append({
+                "post_id": post_id,
+                "entry": entry,
+                "outcome": "copy",
+                "copy_target": target_name,
+                "franchise": entry.get("franchise") or [],
+                "characters": entry.get("character_guess") or [],
+                "dest_display": f"{wp_dir_rel}/{wp_filename}",
+                "note": f"({', '.join(wp_note_parts)})",
+                # The copy source is the primary move's destination, which only
+                # exists on disk once that move row has actually been applied.
+                # plan_moves always appends an entry's copy rows immediately
+                # after its move row, and apply_moves processes rows in list
+                # order, so the source is guaranteed to exist by the time this
+                # copy runs.
+                "source_path": dest_path,
+                "dest_path": wp_dir / wp_filename,
+                "dest_rel": f"{wp_dir_rel}/{wp_filename}",
+            })
+
     return rows, skipped_status_counts
 
 
@@ -266,7 +326,13 @@ def print_table(rows) -> None:
     columns = ["post_id", "franchise", "character(s)", "action", "destination", "note"]
     table_rows = [columns]
     for row in rows:
-        action = {"move": "MOVE", "flag": "FLAG", "missing_file": "MISSING_FILE"}[row["outcome"]]
+        action = {
+            "move": "MOVE",
+            "flag": "FLAG",
+            "missing_file": "MISSING_FILE",
+            "copy": "COPY",
+            "copy_missing_directory": "COPY_MISSING_DIR",
+        }[row["outcome"]]
         table_rows.append([
             row["post_id"],
             ", ".join(row["franchise"]) or "-",
@@ -285,11 +351,18 @@ def print_summary(rows, skipped_status_counts) -> None:
     would_move = sum(1 for r in rows if r["outcome"] == "move")
     flagged = [r for r in rows if r["outcome"] == "flag"]
     missing_file = sum(1 for r in rows if r["outcome"] == "missing_file")
+    copies = [r for r in rows if r["outcome"] == "copy"]
+    copy_missing_dir = sum(1 for r in rows if r["outcome"] == "copy_missing_directory")
 
     flag_breakdown = {}
     for r in flagged:
         flag_breakdown[r["flag_reason"]] = flag_breakdown.get(r["flag_reason"], 0) + 1
     flag_str = ", ".join(f"{k}={v}" for k, v in sorted(flag_breakdown.items())) or "none"
+
+    copy_breakdown = {}
+    for r in copies:
+        copy_breakdown[r["copy_target"]] = copy_breakdown.get(r["copy_target"], 0) + 1
+    copy_str = ", ".join(f"{k}={v}" for k, v in sorted(copy_breakdown.items())) or "none"
 
     skipped_total = sum(skipped_status_counts.values())
     skipped_str = ", ".join(f"{k}={v}" for k, v in sorted(skipped_status_counts.items())) or "none"
@@ -298,6 +371,8 @@ def print_summary(rows, skipped_status_counts) -> None:
     print(f"would_move: {would_move}")
     print(f"flagged_for_review: {len(flagged)}  ({flag_str})")
     print(f"missing_staging_file: {missing_file}")
+    print(f"wallpaper_copies: {len(copies)}  ({copy_str})")
+    print(f"wallpaper_dir_missing: {copy_missing_dir}")
     print(f"skipped (not approved): {skipped_total}  ({skipped_str})")
 
 
@@ -324,7 +399,17 @@ def apply_moves(manifest: dict, rows) -> None:
             entry["archive_flag"] = row["flag_reason"]
             entry["archive_flag_detail"] = row["flag_detail"]
             entry["archive_flag_at"] = now
-        # "missing_file" rows: nothing to write, entry stays approved.
+        elif row["outcome"] == "copy":
+            if row["dest_path"].exists():
+                raise RuntimeError(
+                    f"Refusing to overwrite existing wallpaper copy at {row['dest_path']} "
+                    f"(post_id={row['post_id']}) -- this should have been caught during planning."
+                )
+            shutil.copy2(str(row["source_path"]), str(row["dest_path"]))
+            entry.setdefault("wallpaper_paths", []).append(row["dest_rel"])
+        # "missing_file"/"copy_missing_directory" rows: nothing to write,
+        # entry stays approved (or archived, for a copy still pending its
+        # wallpaper directory) for a future run to pick up.
 
     save_manifest(manifest)
 
@@ -355,12 +440,13 @@ def main() -> None:
     print_summary(rows, skipped_status_counts)
 
     if args.apply:
-        movable_or_flaggable = [r for r in rows if r["outcome"] in ("move", "flag")]
-        apply_moves(manifest, movable_or_flaggable)
-        moved = sum(1 for r in movable_or_flaggable if r["outcome"] == "move")
-        flagged = sum(1 for r in movable_or_flaggable if r["outcome"] == "flag")
+        actionable = [r for r in rows if r["outcome"] in ("move", "flag", "copy")]
+        apply_moves(manifest, actionable)
+        moved = sum(1 for r in actionable if r["outcome"] == "move")
+        flagged = sum(1 for r in actionable if r["outcome"] == "flag")
+        copied = sum(1 for r in actionable if r["outcome"] == "copy")
         print()
-        print(f"Applied: moved {moved}, flagged {flagged}.")
+        print(f"Applied: moved {moved}, flagged {flagged}, wallpaper-copied {copied}.")
     else:
         print()
         print("Dry-run only -- nothing was moved. Re-run with --apply to perform these moves.")
