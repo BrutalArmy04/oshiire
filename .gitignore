@@ -4,7 +4,6 @@
 # These never get committed. Losing this line = burned secret.
 .env
 .env.*
-!.env.example
 *.secret
 praw.ini
 
@@ -15,6 +14,14 @@ staging/
 archive/
 manifest.json
 *.manifest.json
+
+# Personal archive layout (describes YOUR whole collection). Templates are
+# committed; the real ones are yours and stay local.
+layout.json
+000___Known_Series_Names.txt
+known_series_names.txt
+!layout.example.json
+!known_series_names.example.txt
 
 # AI model weights — large binaries, don't want them in git regardless.
 *.onnx

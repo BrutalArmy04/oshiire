@@ -1,0 +1,8 @@
+# Shortname mapping for the "Others/Known Series" filing style.
+# One per line: SHORTNAME = Full Series Name
+# Art from these series goes in Others/Known Series/ with the shortname as a
+# filename suffix (e.g. some_art_BtR.jpg) instead of its own folder.
+# COMMITTED as an example; your real file is gitignored.
+BtR = Bocchi the Rock
+SnF = Sousou no Frieren
+OPM = One Punch Man

@@ -73,7 +73,9 @@ Slice 0, extended by later slices:
 - `status` — one of: `pending_review` (awaiting review, or Skipped for later),
   `approved` (Accepted in review; awaits Slice 3's move to the archive),
   `rejected` (Rejected in review; staging file deleted, record kept for dedup),
-  `download_failed`, `skipped` (auto-skipped at ingest, e.g. non-image).
+  `download_failed`, `skipped` (auto-skipped at ingest, e.g. non-image),
+  `archived` (Slice 3a moved the file into `ARCHIVE_DIR`; terminal state, never
+  reprocessed by `archive.py`).
   Note: a user Skip in the review UI does NOT change status — it stays
   `pending_review` so the entry returns next session. `skipped` is only the
   ingest-time auto-skip.
@@ -94,6 +96,25 @@ Added by Slice 1 (metadata tagging):
   medium (parsed from title), low/zero (Unknown).
 - `guess_source` — `"subreddit"`, `"title"`, `"ai"` (Slice 4), or `"manual"`
   (edited in the UI).
+
+Added by Slice 3a (archive routing engine):
+- `archive_path` — set when `status` becomes `archived`. The destination path
+  the file was moved to, relative to `ARCHIVE_DIR`, POSIX-style.
+- `archived_at` — UTC timestamp of the `--apply` move.
+- `archive_flag` — set only on entries `archive.py` couldn't route (stays
+  `approved`, not moved): one of `needs_folder` (nested franchise resolved but
+  no character subfolder matched — Slice 3b offers create-folder), `needs_shortname`
+  (franchise didn't resolve via `franchise_aliases`/`franchises` and has no
+  entry in the shortname file — Slice 3b offers propose-shortname),
+  `no_folder_alias` (an explicit `null` in `franchise_aliases` — no folder
+  exists yet), or `missing_directory` (the computed destination doesn't exist
+  on disk; `archive.py` never creates directories). Null/absent when unset.
+- `archive_flag_detail` — human-readable reason paired with `archive_flag`.
+- `archive_flag_at` — UTC timestamp of when the flag was recorded.
+  These three are only written by `--apply` (dry-run writes nothing) and are
+  cleared if the entry later routes successfully. This is the seam Slice 3b
+  reads from — it filters the manifest for entries with `archive_flag` set
+  rather than re-running routing logic itself.
 
 **Slice 3 routing precedence (decided now, built later):**
 `crossover: true` → the file goes to a dedicated crossover folder, regardless of
@@ -173,6 +194,72 @@ reprocessable so a later slice (e.g. gallery support) can retry them.
   images, reads/writes the manifest, and (on Reject) deletes staging files.
 - Show a clear "all reviewed" state when no `pending_review` entries remain.
 
+## Archiving rules (Slice 3)
+Split into two slices:
+- **3a — routing engine + `layout.json`.** Given an `approved` entry whose
+  decisions are already made, move its staging file to the correct archive
+  location. Pure filing logic driven by config. Build/verify this first.
+- **3b — review-UI decisions that feed 3a.** Adds to the Slice 2 UI: a
+  "create folder" button for unmatched characters, shortname proposal, wallpaper
+  selection, and character-alias resolution — all optional, per image, written
+  to the manifest for 3a to execute.
+
+Config files:
+- `layout.json` — the user's PERSONAL archive layout. **Gitignored.** Describes
+  each franchise's filing style and name aliases. Seeded from the user's real
+  folder tree.
+- `layout.example.json` — committed template documenting the format.
+- Shortname file (`000___Known_Series_Names.txt` for this user;
+  `known_series_names.txt` generic) — maps SHORTNAME = Full Series Name for the
+  `shortname` style. Personal one gitignored; `.example` committed.
+- `ARCHIVE_DIR` in `.env` — the archive root (e.g. a Google Drive synced
+  folder). Never hardcode the archive path.
+
+Filing styles (per franchise in `layout.json`):
+- `flat` — file goes directly in `ARCHIVE_DIR/<Franchise>/`. No character
+  subfolders; same-series groups also land here.
+- `nested` — `ARCHIVE_DIR/<Franchise>/<Character>/`. Same-series groups (all
+  characters share one franchise) go to `<Franchise>/<group_subfolder>/` where
+  `group_subfolder` is always `Others_Group`.
+- `shortname` — art from a lightly-collected known series goes in
+  `Others/Known Series/` with a `_SHORTNAME` filename suffix, decoded by the
+  shortname file. Not its own folder.
+
+Routing precedence (first match wins):
+1. `crossover: true` → `ARCHIVE_DIR/Crossover/` regardless of franchise/characters.
+2. Franchise resolves (via `franchise_aliases` → folder) and style is `flat` →
+   the flat folder.
+3. Franchise resolves, style `nested`, single character that matches a subfolder
+   (via `character_aliases`) → that character subfolder.
+4. Franchise resolves, style `nested`, multiple same-franchise characters →
+   `<Franchise>/Others_Group/`.
+5. Franchise resolves, style `nested`, character has NO matching subfolder →
+   FLAG for review (offer "create folder for <Character>" or "route to
+   Others_Group"). Never auto-create a folder from a guess.
+6. Known series but only a `shortname` (no folder) → `Others/Known Series/` with
+   the suffix; if the series has no shortname yet → propose one, user confirms in
+   review.
+7. OC (`[original]`) → `Others/Artist's Original/`.
+8. Belongs somewhere but unidentifiable → `Others/Unknown Sauce/`.
+
+Name matching:
+- `franchise_aliases`: tag franchise name → folder name (`"Azure Lane"` →
+  `"Azur Lane"`, `"Re:Zero"` → `"Re Zero"`). A `null` alias means no folder
+  exists yet → flag at review.
+- `character_aliases[franchise]`: tag character name → folder name
+  (`"Raiden Shogun"` → `"Raiden"`). Unmatched → flag, never guess.
+
+Wallpaper (3b): an image can ALSO be copied to `Wallpaper/PC/` and/or
+`Wallpaper/<phone>/` (folder name is `Telefon` for this user) on top of its
+normal archive placement. Set via a review-UI control, stored in the manifest.
+
+Hard rules:
+- New folders are ONLY created by an explicit user click in the review UI.
+- Moves go into `ARCHIVE_DIR`; Google-Drive-synced-folder = plain file move, the
+  Drive client uploads it. Do NOT add "delete local after upload" for a synced
+  folder — that needs rclone/API confirmation, out of scope.
+- The archive path always comes from `.env`; nothing about it is hardcoded.
+
 ## Build order (build vertically, one slice per session)
 0. Read `REDDIT_SAVED_FEED_URL`, fetch + parse the saved feed with feedparser,
    extract the direct image + metadata per the manifest schema above, download
@@ -187,7 +274,10 @@ reprocessable so a later slice (e.g. gallery support) can retry them.
 2. Gradio review UI per "Review UI rules" above: one-at-a-time, chronological,
    Skip/Reject/Accept + Undo, editable character/franchise/crossover. Sets status
    only — no file moving (that's Slice 3). Reject deletes the staging file.
-3. Archiving: on approval, move file to `archive/<character>/`.
+3. Archiving. **3a:** routing engine — move approved files into ARCHIVE_DIR per
+   layout.json (flat/nested/shortname, aliases, Crossover/Others_Group/Others,
+   precedence rules above). **3b:** review-UI decisions (create-folder button,
+   shortname proposal, wallpaper, alias resolution). See "Archiving rules".
 4. Swap the stub for the WD14 tagger behind the same `guess_character` seam.
 5. (Optional, last) Packaging. Do NOT design earlier slices around PyInstaller.
 
