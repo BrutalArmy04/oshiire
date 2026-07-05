@@ -196,6 +196,15 @@ Split into two slices:
   - **Wallpaper** selection — none / PC / phone / both (see below).
   - **Character-alias resolution** — let the user map a tagged name to an existing
     folder name, persisting the alias to `layout.json`.
+  - **Flag-resolution pass (`resolve.py`)** — a companion screen (not part of
+    Slice 2's UI) that presents each `flag`ged `approved` entry one at a time
+    and offers the fix scoped to why `archive.py` flagged it: map/create a
+    franchise folder, map/create a character subfolder, or propose a
+    shortname. Also offers a per-image `archive_override: "unknown_source"`
+    manifest field that forces routing to `Others/Unknown Sauce` without
+    touching `layout.json`, for a franchise that genuinely doesn't belong
+    anywhere yet. Writes to `layout.json`/the shortname file are atomic (tmp
+    file + `os.replace`, same pattern as the manifest).
 
 Config files:
 - `layout.json` — the user's PERSONAL archive layout. **Gitignored.** Describes

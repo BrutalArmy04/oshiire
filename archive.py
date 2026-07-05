@@ -39,6 +39,15 @@ def load_layout(path: Path = LAYOUT_PATH) -> dict:
         return json.load(f)
 
 
+def save_layout(layout: dict, path: Path = LAYOUT_PATH) -> None:
+    """Atomic write, preserving layout.json's hand-curated key order -- no
+    sort_keys, since the file is loaded, mutated in place, and re-dumped."""
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with tmp_path.open("w", encoding="utf-8") as f:
+        json.dump(layout, f, indent=2, ensure_ascii=False)
+    os.replace(tmp_path, path)
+
+
 def load_shortname_map(layout: dict) -> dict:
     shortname_path = Path(layout["shortname_file"])
     mapping = {}
@@ -51,6 +60,31 @@ def load_shortname_map(layout: dict) -> dict:
         code, full_name = line.split("=", 1)
         mapping[full_name.strip().lower()] = code.strip()
     return mapping
+
+
+def save_shortname_entry(shortname_path: Path, code: str, full_name: str) -> None:
+    """Atomic, line-based write that preserves comments/blank lines/other
+    entries -- does not round-trip through load_shortname_map's dict, which
+    discards exactly that formatting. Replaces an existing entry for the same
+    full_name (case-insensitive) in place, else appends a new line."""
+    lines = shortname_path.read_text(encoding="utf-8").splitlines() if shortname_path.exists() else []
+    target = full_name.strip().lower()
+    new_line = f"{code.strip()} = {full_name.strip()}"
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        _, existing_full = stripped.split("=", 1)
+        if existing_full.strip().lower() == target:
+            lines[i] = new_line
+            break
+    else:
+        lines.append(new_line)
+
+    tmp_path = shortname_path.with_suffix(shortname_path.suffix + ".tmp")
+    tmp_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.replace(tmp_path, shortname_path)
 
 
 def is_original(title: str) -> bool:
@@ -92,6 +126,9 @@ def route_entry(entry: dict, layout: dict, shortname_map: dict) -> RouteResult:
 
     if crossover:
         return RouteResult("move", special["crossover"], note="crossover")
+
+    if entry.get("archive_override") == "unknown_source":
+        return RouteResult("move", special["others_unknown_source"], note="manual override")
 
     primary_franchise = franchise_list[0] if franchise_list else None
 
@@ -414,12 +451,7 @@ def apply_moves(manifest: dict, rows) -> None:
     save_manifest(manifest)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Route approved manifest entries into the archive.")
-    parser.add_argument("--apply", "--execute", dest="apply", action="store_true",
-                         help="Actually move files and update the manifest. Default is dry-run.")
-    args = parser.parse_args()
-
+def get_archive_dir() -> Path:
     load_dotenv()
     archive_dir_value = os.environ.get("ARCHIVE_DIR")
     if not archive_dir_value:
@@ -431,6 +463,16 @@ def main() -> None:
         print(f"ARCHIVE_DIR does not exist: {archive_dir}", file=sys.stderr)
         sys.exit(1)
 
+    return archive_dir
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Route approved manifest entries into the archive.")
+    parser.add_argument("--apply", "--execute", dest="apply", action="store_true",
+                         help="Actually move files and update the manifest. Default is dry-run.")
+    args = parser.parse_args()
+
+    archive_dir = get_archive_dir()
     layout = load_layout()
     shortname_map = load_shortname_map(layout)
     manifest = load_manifest()
