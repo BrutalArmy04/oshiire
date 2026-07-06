@@ -27,6 +27,8 @@ from archive import (
     save_layout,
     load_shortname_map,
     save_shortname_entry,
+    find_shortname_collision,
+    verify_shortname_entry,
     plan_moves,
     resolve_franchise,
 )
@@ -84,7 +86,15 @@ def _propose_shortname(tag_name):
     words = [w for w in re.split(r"[^A-Za-z0-9]+", tag_name or "") if w]
     if not words:
         return ""
-    return "".join(w[0].upper() for w in words)
+    base = "".join(w[0].upper() for w in words)
+
+    used_codes = set(shortname_map.values())
+    if base not in used_codes:
+        return base
+    n = 2
+    while f"{base}{n}" in used_codes:
+        n += 1
+    return f"{base}{n}"
 
 
 def _snapshot_layout():
@@ -343,8 +353,17 @@ def on_save_shortname(code_text):
         return _render_current("Enter a shortname code first.")
 
     shortname_path = Path(layout["shortname_file"])
+
+    collision = find_shortname_collision(shortname_path, code, tag)
+    if collision:
+        return _render_current(f"Code '{code}' is already used by '{collision}'. Pick a different code.")
+
     prior_text = shortname_path.read_text(encoding="utf-8") if shortname_path.exists() else None
     save_shortname_entry(shortname_path, code, tag)
+
+    if not verify_shortname_entry(shortname_path, code, tag):
+        return _render_current("Shortname save did not persist to disk -- please retry.")
+
     shortname_map = load_shortname_map(layout)
     last_action = {
         "kind": "shortname", "path": shortname_path, "existed_before": prior_text is not None,

@@ -48,18 +48,54 @@ def save_layout(layout: dict, path: Path = LAYOUT_PATH) -> None:
     os.replace(tmp_path, path)
 
 
+def _parse_shortname_lines(text: str):
+    """Yields (code, full_name) for each real mapping line in a shortname
+    file's text -- skips blank lines and comments. Shared by every
+    reader/writer below so the line format is parsed exactly one way."""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        code, full_name = stripped.split("=", 1)
+        yield code.strip(), full_name.strip()
+
+
 def load_shortname_map(layout: dict) -> dict:
     shortname_path = Path(layout["shortname_file"])
-    mapping = {}
     if not shortname_path.exists():
-        return mapping
-    for line in shortname_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        code, full_name = line.split("=", 1)
-        mapping[full_name.strip().lower()] = code.strip()
-    return mapping
+        return {}
+    return {
+        full_name.lower(): code
+        for code, full_name in _parse_shortname_lines(shortname_path.read_text(encoding="utf-8"))
+    }
+
+
+def find_shortname_collision(shortname_path: Path, code: str, full_name: str) -> Optional[str]:
+    """Returns the existing full_name already using `code`, if any, when that
+    full_name differs from the one being saved -- else None. Guards against
+    two different series silently sharing one undecodable code."""
+    if not shortname_path.exists():
+        return None
+    target_code = code.strip()
+    target_full = full_name.strip().lower()
+    for existing_code, existing_full in _parse_shortname_lines(shortname_path.read_text(encoding="utf-8")):
+        if existing_code == target_code and existing_full.lower() != target_full:
+            return existing_full
+    return None
+
+
+def verify_shortname_entry(shortname_path: Path, code: str, full_name: str) -> bool:
+    """Re-reads the file after a save and confirms `code = full_name` is
+    actually present on disk -- guards against a save that silently didn't
+    persist (e.g. a stale path, a swallowed write error)."""
+    if not shortname_path.exists():
+        return False
+    target_code = code.strip()
+    target_full = full_name.strip().lower()
+    return any(
+        existing_code == target_code and existing_full.lower() == target_full
+        for existing_code, existing_full in _parse_shortname_lines(shortname_path.read_text(encoding="utf-8"))
+    )
 
 
 def save_shortname_entry(shortname_path: Path, code: str, full_name: str) -> None:

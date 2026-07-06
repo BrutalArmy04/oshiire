@@ -39,6 +39,8 @@ def run_tagging(manifest: dict) -> list:
     for entry in manifest.values():
         if entry.get("status") != "pending_review":
             continue
+        if entry.get("guess_source") in ("manual", "ai"):
+            continue          # never overwrite a human correction or an AI fallback result
         tag_entry(entry)
         tagged.append(entry)
     return tagged
