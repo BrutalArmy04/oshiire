@@ -56,9 +56,16 @@ Full design: see `docs/blueprint.md`.
   images from `staging/`, reads/writes the manifest, and moves files on approval.
 
 ## Manifest schema (defined once, reused everywhere)
-Each entry is keyed by the stable Reddit fullname (`t3_...`). Fields as built in
-Slice 0, extended by later slices:
-- `post_id` — stable Reddit fullname (`t3_...`); the dedup key.
+Each entry is keyed by the stable Reddit fullname (`t3_...`) for ordinary
+(single-image) posts. **Gallery posts** (see Slice 0 below) instead get one
+entry per image, keyed `t3_..._1`, `t3_..._2`, ... (matching each entry's
+`image_index`) — for those, the dict key and the `post_id` field diverge:
+`post_id` always holds the shared PARENT fullname, never the suffixed key.
+Post-level dedup is therefore done by collecting every entry's `post_id`
+field (see the Dedup rule below), never by dict-key membership. Fields as
+built in Slice 0, extended by later slices:
+- `post_id` — the post's stable Reddit fullname (`t3_...`). For gallery
+  entries this is the shared parent id, not the entry's own dict key.
 - `title` — post title.
 - `subreddit` — source subreddit.
 - `permalink` — the Reddit post URL.
@@ -70,6 +77,8 @@ Slice 0, extended by later slices:
   "prefer-original-source" step parses those ids from the title, so no
   `source_link` field is needed.)
 - `local_path`, `fetched_at` — set by Slice 0.
+- `image_index` — 1-based position within a gallery post. Only set on
+  gallery per-image entries; absent on single-image entries.
 - `status` — one of: `pending_review` (awaiting review, or Skipped for later),
   `approved` (Accepted in review; awaits Slice 3's move to the archive),
   `rejected` (Rejected in review; staging file deleted, record kept for dedup),
@@ -78,6 +87,8 @@ Slice 0, extended by later slices:
   `pending_review` so the entry returns next session. `skipped` is only the
   ingest-time auto-skip.
 - `skip_reason` — why an entry was auto-`skipped` at ingest. Null otherwise.
+  Distinct from `reason`, which is used only for `download_failed`/`error`
+  entries — the two fields are never interchangeable.
 
 Added by Slice 1 (metadata tagging):
 - `franchise` — a **list** of source works (e.g. `["Genshin Impact"]`,
@@ -102,8 +113,16 @@ list on a crossover entry is metadata for search/filter only — it does NOT spl
 the file across franchise folders.
 
 **Dedup rule:** skip a post when it already exists in the manifest in a *handled*
-state (downloaded or `skipped`) — not merely "seen." Keep `skipped` entries
-reprocessable so a later slice (e.g. gallery support) can retry them.
+state (downloaded or `skipped`) — not merely "seen." Checked via the `post_id`
+field across every existing entry (`known_post_ids` in ingest.py), not via dict-
+key membership, since a gallery post's per-image entries are keyed `t3_..._N`
+while still sharing one `post_id`. Keep `skipped` entries reprocessable: any
+entry whose `skip_reason` is `gallery_post`, `gallery_fetch_failed`, or
+`gallery_parse_error` is automatically retried on every ingest run
+(`retry_skipped_galleries`) until it either expands into real per-image entries
+or settles on a confirmed-non-gallery reason (`gallery_no_images`, or one of the
+original non-gallery reasons) — the reason value itself is the retry state
+machine, no separate "already tried" flag needed.
 
 ## Metadata tagging rules (Slice 1)
 - Signal priority: character-specific subreddit (highest) → franchise subreddit
@@ -266,8 +285,15 @@ Hard rules:
 0. Read `REDDIT_SAVED_FEED_URL`, fetch + parse the saved feed with feedparser,
    extract the direct image + metadata per the manifest schema above, download
    from `reddit_image_url` into `staging/`, write entries as `pending_review`.
-   Record (don't act on) `source_link`. Non-image/gallery/link posts get a
-   `skipped` entry with a `skip_reason`. Skip anything already handled in the
+   Record (don't act on) `source_link`. Non-image/link posts get a `skipped`
+   entry with a `skip_reason`. Gallery posts are expanded into one
+   `pending_review` entry per image (see the manifest schema's `image_index`
+   note above) — the RSS feed has no per-image data, so this requires an
+   extra fetch of the post's plain `old.reddit.com` permalink HTML (Reddit's
+   `.json`/API endpoints return 403 for this project's User-Agent; the HTML
+   permalink works, with `Cookie: over18=1` needed for NSFW posts). A gallery
+   whose fetch fails or can't be parsed gets a retryable `skipped` placeholder
+   instead (see the Dedup rule above). Skip anything already handled in the
    manifest. Manifest lives at `staging/manifest.json`. No AI, no UI, no
    archiving.
 1. Metadata tagging: set `franchise`, `character_guess` (list), `guess_confidence`,
