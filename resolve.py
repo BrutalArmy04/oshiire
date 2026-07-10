@@ -13,26 +13,25 @@ run. This also means resolving one root cause (e.g. a franchise alias) clears
 every other flagged entry that shared it, automatically, on the next render.
 """
 import copy
-import os
-import re
 import warnings
 from pathlib import Path
 
 import gradio as gr
 from starlette.exceptions import StarletteDeprecationWarning
 
-from archive import (
-    get_archive_dir,
+from archive import get_archive_dir, plan_moves, resolve_franchise
+from manifest import load_manifest, save_manifest
+from shortname import (
     load_layout,
     save_layout,
     load_shortname_map,
+    match_shortname,
+    propose_shortname_code,
     save_shortname_entry,
     find_shortname_collision,
     verify_shortname_entry,
-    plan_moves,
-    resolve_franchise,
+    undo_shortname_write,
 )
-from manifest import load_manifest, save_manifest
 
 warnings.filterwarnings("ignore", category=StarletteDeprecationWarning)
 
@@ -54,7 +53,7 @@ FLAG_CATEGORY_ORDER = {
 
 archive_dir = get_archive_dir()
 layout = load_layout()
-shortname_map = load_shortname_map(layout)
+shortname_entries = load_shortname_map(layout)
 manifest = load_manifest()
 
 rows = []
@@ -71,7 +70,7 @@ def _sort_key(row):
 
 def _recompute():
     global rows
-    all_rows, _ = plan_moves(manifest, layout, shortname_map, archive_dir)
+    all_rows, _ = plan_moves(manifest, layout, shortname_entries, archive_dir)
     candidates = [r for r in all_rows if r["outcome"] == "flag" and r["flag_reason"] != "missing_directory"]
     rows = sorted(candidates, key=_sort_key)
 
@@ -83,18 +82,7 @@ def _current_row():
 
 
 def _propose_shortname(tag_name):
-    words = [w for w in re.split(r"[^A-Za-z0-9]+", tag_name or "") if w]
-    if not words:
-        return ""
-    base = "".join(w[0].upper() for w in words)
-
-    used_codes = set(shortname_map.values())
-    if base not in used_codes:
-        return base
-    n = 2
-    while f"{base}{n}" in used_codes:
-        n += 1
-    return f"{base}{n}"
+    return propose_shortname_code(tag_name, shortname_entries)
 
 
 def _snapshot_layout():
@@ -342,7 +330,7 @@ def on_route_group():
 
 
 def on_save_shortname(code_text):
-    global shortname_map, last_action
+    global shortname_entries, last_action
     row = _current_row()
     if row is None:
         return _render_current()
@@ -351,6 +339,13 @@ def on_save_shortname(code_text):
     code = (code_text or "").strip()
     if not tag or not code:
         return _render_current("Enter a shortname code first.")
+
+    # Same/matching series may already have an entry under a stricter-looking
+    # string (e.g. tag "NIKKE" vs file entry "NIKKE = NIKKE The Goddess of
+    # Victory") -- reuse it instead of treating it as a code collision.
+    already_matched_code = match_shortname(tag, shortname_entries)
+    if already_matched_code:
+        return _finish_resolution(row)
 
     shortname_path = Path(layout["shortname_file"])
 
@@ -364,7 +359,7 @@ def on_save_shortname(code_text):
     if not verify_shortname_entry(shortname_path, code, tag):
         return _render_current("Shortname save did not persist to disk -- please retry.")
 
-    shortname_map = load_shortname_map(layout)
+    shortname_entries = load_shortname_map(layout)
     last_action = {
         "kind": "shortname", "path": shortname_path, "existed_before": prior_text is not None,
         "snapshot": prior_text, "resolved_post_id": row["post_id"],
@@ -378,7 +373,7 @@ def on_load():
 
 
 def on_undo():
-    global last_action, current_index, shortname_map
+    global last_action, current_index, shortname_entries
     if last_action is None:
         return _render_current()
 
@@ -390,14 +385,8 @@ def on_undo():
         layout.update(action["snapshot"])
         save_layout(layout)
     elif action["kind"] == "shortname":
-        path = action["path"]
-        if action["existed_before"]:
-            tmp_path = path.with_suffix(path.suffix + ".tmp")
-            tmp_path.write_text(action["snapshot"], encoding="utf-8")
-            os.replace(tmp_path, path)
-        elif path.exists():
-            path.unlink()
-        shortname_map = load_shortname_map(layout)
+        undo_shortname_write(action["path"], action["existed_before"], action["snapshot"])
+        shortname_entries = load_shortname_map(layout)
     elif action["kind"] == "manifest_field":
         entry = manifest[action["post_id"]]
         field = action["field"]

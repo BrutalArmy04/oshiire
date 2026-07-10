@@ -6,7 +6,6 @@ destination directory; anything that doesn't resolve to an existing folder is
 flagged for Slice 3b's review UI instead.
 """
 import argparse
-import json
 import os
 import re
 import shutil
@@ -19,8 +18,8 @@ from typing import Optional
 from dotenv import load_dotenv
 
 from manifest import load_manifest, save_manifest
+from shortname import load_layout, load_shortname_map, match_shortname
 
-LAYOUT_PATH = Path("layout.json")
 ORIGINAL_RE = re.compile(r"\[\s*original\s*\]", re.IGNORECASE)
 
 
@@ -32,95 +31,6 @@ class RouteResult:
     note: Optional[str] = None           # e.g. "alias", "OC" -- shown in table
     flag_reason: Optional[str] = None
     flag_detail: Optional[str] = None
-
-
-def load_layout(path: Path = LAYOUT_PATH) -> dict:
-    with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def save_layout(layout: dict, path: Path = LAYOUT_PATH) -> None:
-    """Atomic write, preserving layout.json's hand-curated key order -- no
-    sort_keys, since the file is loaded, mutated in place, and re-dumped."""
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    with tmp_path.open("w", encoding="utf-8") as f:
-        json.dump(layout, f, indent=2, ensure_ascii=False)
-    os.replace(tmp_path, path)
-
-
-def _parse_shortname_lines(text: str):
-    """Yields (code, full_name) for each real mapping line in a shortname
-    file's text -- skips blank lines and comments. Shared by every
-    reader/writer below so the line format is parsed exactly one way."""
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        code, full_name = stripped.split("=", 1)
-        yield code.strip(), full_name.strip()
-
-
-def load_shortname_map(layout: dict) -> dict:
-    shortname_path = Path(layout["shortname_file"])
-    if not shortname_path.exists():
-        return {}
-    return {
-        full_name.lower(): code
-        for code, full_name in _parse_shortname_lines(shortname_path.read_text(encoding="utf-8"))
-    }
-
-
-def find_shortname_collision(shortname_path: Path, code: str, full_name: str) -> Optional[str]:
-    """Returns the existing full_name already using `code`, if any, when that
-    full_name differs from the one being saved -- else None. Guards against
-    two different series silently sharing one undecodable code."""
-    if not shortname_path.exists():
-        return None
-    target_code = code.strip()
-    target_full = full_name.strip().lower()
-    for existing_code, existing_full in _parse_shortname_lines(shortname_path.read_text(encoding="utf-8")):
-        if existing_code == target_code and existing_full.lower() != target_full:
-            return existing_full
-    return None
-
-
-def verify_shortname_entry(shortname_path: Path, code: str, full_name: str) -> bool:
-    """Re-reads the file after a save and confirms `code = full_name` is
-    actually present on disk -- guards against a save that silently didn't
-    persist (e.g. a stale path, a swallowed write error)."""
-    if not shortname_path.exists():
-        return False
-    target_code = code.strip()
-    target_full = full_name.strip().lower()
-    return any(
-        existing_code == target_code and existing_full.lower() == target_full
-        for existing_code, existing_full in _parse_shortname_lines(shortname_path.read_text(encoding="utf-8"))
-    )
-
-
-def save_shortname_entry(shortname_path: Path, code: str, full_name: str) -> None:
-    """Atomic, line-based write that preserves comments/blank lines/other
-    entries -- does not round-trip through load_shortname_map's dict, which
-    discards exactly that formatting. Replaces an existing entry for the same
-    full_name (case-insensitive) in place, else appends a new line."""
-    lines = shortname_path.read_text(encoding="utf-8").splitlines() if shortname_path.exists() else []
-    target = full_name.strip().lower()
-    new_line = f"{code.strip()} = {full_name.strip()}"
-
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        _, existing_full = stripped.split("=", 1)
-        if existing_full.strip().lower() == target:
-            lines[i] = new_line
-            break
-    else:
-        lines.append(new_line)
-
-    tmp_path = shortname_path.with_suffix(shortname_path.suffix + ".tmp")
-    tmp_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    os.replace(tmp_path, shortname_path)
 
 
 def is_original(title: str) -> bool:
@@ -149,16 +59,13 @@ def resolve_character(folder_name: str, franchise_def: dict, character_name: str
     return None
 
 
-def lookup_shortname(tag_name: str, shortname_map: dict):
-    return shortname_map.get(tag_name.strip().lower())
-
-
-def route_entry(entry: dict, layout: dict, shortname_map: dict) -> RouteResult:
+def route_entry(entry: dict, layout: dict, shortname_entries: list) -> RouteResult:
     franchise_list = entry.get("franchise") or []
     character_list = entry.get("character_guess") or []
     crossover = entry.get("crossover", False)
     title = entry.get("title", "")
     special = layout["special_folders"]
+    primary_franchise = franchise_list[0] if franchise_list else None
 
     if crossover:
         return RouteResult("move", special["crossover"], note="crossover")
@@ -166,7 +73,20 @@ def route_entry(entry: dict, layout: dict, shortname_map: dict) -> RouteResult:
     if entry.get("archive_override") == "unknown_source":
         return RouteResult("move", special["others_unknown_source"], note="manual override")
 
-    primary_franchise = franchise_list[0] if franchise_list else None
+    if entry.get("archive_override") == "known_series":
+        code = match_shortname(primary_franchise, shortname_entries) if primary_franchise else None
+        if code:
+            return RouteResult(
+                "move",
+                special["others_known_series"],
+                filename_suffix=code,
+                note="manual override: known series",
+            )
+        return RouteResult(
+            "flag",
+            flag_reason="known_series_override_unresolved",
+            flag_detail=f"archive_override='known_series' but no shortname entry found for '{primary_franchise}'",
+        )
 
     if primary_franchise:
         folder_name, status = resolve_franchise(primary_franchise, layout)
@@ -197,6 +117,9 @@ def route_entry(entry: dict, layout: dict, shortname_map: dict) -> RouteResult:
                 if matched:
                     return RouteResult("move", f"{folder_name}/{matched}", note=note)
 
+                if franchise_def.get("fallback") == "root":
+                    return RouteResult("move", folder_name, note=note)
+
                 return RouteResult(
                     "flag",
                     flag_reason="needs_folder",
@@ -205,7 +128,7 @@ def route_entry(entry: dict, layout: dict, shortname_map: dict) -> RouteResult:
 
         # Unmapped (or aliased/identity to a folder that isn't defined) -> try
         # the shortname file before giving up.
-        shortname = lookup_shortname(primary_franchise, shortname_map)
+        shortname = match_shortname(primary_franchise, shortname_entries)
         if shortname:
             return RouteResult(
                 "move",
@@ -257,7 +180,7 @@ def _avoid_collision(dest_dir: Path, filename: str):
         n += 1
 
 
-def plan_moves(manifest: dict, layout: dict, shortname_map: dict, archive_dir: Path):
+def plan_moves(manifest: dict, layout: dict, shortname_entries: list, archive_dir: Path):
     """Returns (rows, skipped_status_counts). Each row is a dict describing
     one approved entry's planned outcome; nothing here touches disk."""
     rows = []
@@ -283,7 +206,7 @@ def plan_moves(manifest: dict, layout: dict, shortname_map: dict, archive_dir: P
             })
             continue
 
-        result = route_entry(entry, layout, shortname_map)
+        result = route_entry(entry, layout, shortname_entries)
 
         if result.action == "flag":
             rows.append({
@@ -510,10 +433,10 @@ def main() -> None:
 
     archive_dir = get_archive_dir()
     layout = load_layout()
-    shortname_map = load_shortname_map(layout)
+    shortname_entries = load_shortname_map(layout)
     manifest = load_manifest()
 
-    rows, skipped_status_counts = plan_moves(manifest, layout, shortname_map, archive_dir)
+    rows, skipped_status_counts = plan_moves(manifest, layout, shortname_entries, archive_dir)
     print_table(rows)
     print_summary(rows, skipped_status_counts)
 

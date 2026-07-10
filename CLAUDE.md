@@ -106,6 +106,21 @@ Added by Slice 1 (metadata tagging):
 - `guess_source` — `"subreddit"`, `"title"`, `"ai"` (Slice 4), or `"manual"`
   (edited in the UI).
 
+Added by Slice 3 (archiving):
+- `same_series_group` — boolean, set via the review UI's "Same-series group"
+  checkbox (see Archiving rules below). Default `false`.
+- `wallpaper` — `"none"` | `"pc"` | `"phone"` | `"both"`, set via the review
+  UI's Wallpaper control. Default `"none"`.
+- `archive_override` — per-image routing override, set in the review UI or in
+  `resolve.py`, that wins over the franchise's normal `layout.json` resolution
+  without ever mutating `layout.json` itself. Values: `"unknown_source"`
+  (routes to `Others/Unknown Sauce`, set only from `resolve.py`) or
+  `"known_series"` (routes to `Others/Known Series/` shortname-style, set from
+  the review UI's "File as Known Series" checkbox). Absent by default.
+- `archive_flag`, `archive_flag_detail`, `archive_flag_at` — set only by
+  `archive.py --apply` when an entry can't be routed; cleared again once it
+  successfully moves. Not written during dry-run.
+
 **Slice 3 routing precedence (decided now, built later):**
 `crossover: true` → the file goes to a dedicated crossover folder, regardless of
 `franchise`. Otherwise route normally (by character/franchise). The `franchise`
@@ -215,6 +230,15 @@ Split into two slices:
   - **Wallpaper** selection — none / PC / phone / both (see below).
   - **Character-alias resolution** — let the user map a tagged name to an existing
     folder name, persisting the alias to `layout.json`.
+  - **File as Known Series** checkbox (in the Slice 2 review UI itself, alongside
+    crossover/group/wallpaper) — forces the CURRENT image to file shortname-style
+    in `Others/Known Series/`, overriding its franchise's normal `layout.json`
+    routing. On Accept, reuses an existing shortname-file entry for the
+    franchise if one matches (see the shortname-matching rules below), else
+    proposes and saves a new collision-checked code. Sets a per-image
+    `archive_override: "known_series"` manifest field — never touches the
+    franchise's global `layout.json` mapping. Undo reverts both the manifest
+    field and any new shortname-file line it wrote.
   - **Flag-resolution pass (`resolve.py`)** — a companion screen (not part of
     Slice 2's UI) that presents each `flag`ged `approved` entry one at a time
     and offers the fix scoped to why `archive.py` flagged it: map/create a
@@ -224,6 +248,16 @@ Split into two slices:
     touching `layout.json`, for a franchise that genuinely doesn't belong
     anywhere yet. Writes to `layout.json`/the shortname file are atomic (tmp
     file + `os.replace`, same pattern as the manifest).
+  - Shared shortname-file/layout.json I/O, matching, and code-proposal helpers
+    (used by `archive.py`, `resolve.py`, and the review UI's Known Series
+    control) live in `shortname.py`, not `archive.py` — kept separate so the
+    Slice 2 review UI never has to import Slice 3a's routing logic to reuse
+    this generic file I/O. Franchise-tag matching against the shortname file
+    checks both the code and full-name columns, case-insensitively, including
+    the tag being a leading token of a longer full name (e.g. `"NIKKE"` matches
+    `NIKKE = NIKKE The Goddess of Victory`) — this also resolves the tag
+    directly to its existing code without creating a duplicate, near-miss
+    entry.
 
 Config files:
 - `layout.json` — the user's PERSONAL archive layout. **Gitignored.** Describes
@@ -241,7 +275,12 @@ Filing styles (per franchise in `layout.json`):
   subfolders; same-series groups also land here.
 - `nested` — `ARCHIVE_DIR/<Franchise>/<Character>/`. Same-series groups (all
   characters share one franchise) go to `<Franchise>/<group_subfolder>/` where
-  `group_subfolder` is always `Others_Group`.
+  `group_subfolder` is always `Others_Group`. A nested franchise may set an
+  optional `"fallback": "root"` in `layout.json` to route a character with no
+  matching subfolder to the franchise's own top-level folder instead of
+  flagging — useful for gradually promoting characters into subfolders in a
+  big flat-ish franchise without every un-promoted character flagging for
+  review. Default (key absent) is unchanged: flag as before.
 - `shortname` — art from a lightly-collected known series goes in
   `Others/Known Series/` with a `_SHORTNAME` filename suffix, decoded by the
   shortname file. Not its own folder.
@@ -256,7 +295,9 @@ Routing precedence (first match wins):
    `<Franchise>/Others_Group/`.
 5. Franchise resolves, style `nested`, character has NO matching subfolder →
    FLAG for review (offer "create folder for <Character>" or "route to
-   Others_Group"). Never auto-create a folder from a guess.
+   Others_Group"), UNLESS the franchise sets `"fallback": "root"` in
+   `layout.json`, in which case route to the franchise's own top-level folder
+   instead. Never auto-create a folder from a guess.
 6. Known series but only a `shortname` (no folder) → `Others/Known Series/` with
    the suffix; if the series has no shortname yet → propose one, user confirms in
    review.

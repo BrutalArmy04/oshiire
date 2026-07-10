@@ -1,5 +1,5 @@
 {
-  "_comment": "TEMPLATE layout for Oshiire archiving. COMMITTED to the repo as documentation of the format. Copy this to layout.json (which is gitignored) and fill in YOUR real archive. Style per franchise: 'nested' = Franchise/Character/ subfolders; 'flat' = everything in Franchise/ with no subfolders; 'shortname' = art from a lightly-collected series goes in a shared folder with a _SHORTNAME suffix in the filename, decoded by the shortname file. Unmatched characters are flagged in the review UI, never auto-created. Aliases map the franchise/character names your tagger produces to the actual folder names on disk.",
+  "_comment": "TEMPLATE layout for Oshiire archiving. COMMITTED to the repo as documentation of the format. Copy this to layout.json (which is gitignored) and fill in YOUR real archive. Style per franchise: 'nested' = Franchise/Character/ subfolders; 'flat' = everything in Franchise/ with no subfolders; 'shortname' = art from a lightly-collected series goes in a shared folder with a _SHORTNAME suffix in the filename, decoded by the shortname file. Unmatched characters are flagged in the review UI, never auto-created -- UNLESS a nested franchise sets the optional 'fallback': 'root' (see the example below), in which case an unmatched character routes to the franchise's own top-level folder instead of flagging. Aliases map the franchise/character names your tagger produces to the actual folder names on disk.",
 
   "archive_dir_env": "ARCHIVE_DIR",
   "group_subfolder": "Others_Group",
@@ -29,7 +29,8 @@
   "franchises": {
     "Example Nested Franchise": {
       "style": "nested",
-      "characters": ["Character A", "Character B", "Character C"]
+      "characters": ["Character A", "Character B", "Character C"],
+      "fallback": "root"
     },
     "Example Flat Franchise": {
       "style": "flat"

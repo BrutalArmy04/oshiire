@@ -13,11 +13,23 @@ from starlette.exceptions import StarletteDeprecationWarning
 
 from manifest import load_manifest, save_manifest
 from tagger import remove_subreddit_map_entry, save_subreddit_map_entry, subreddit_is_mapped
+from shortname import (
+    load_layout,
+    load_shortname_map,
+    match_shortname,
+    propose_shortname_code,
+    save_shortname_entry,
+    find_shortname_collision,
+    verify_shortname_entry,
+    undo_shortname_write,
+)
 
 warnings.filterwarnings("ignore", category=StarletteDeprecationWarning)
 
 # Mirrors archive.py's ORIGINAL_RE/is_original -- duplicated rather than
 # imported since review.py (Slice 2) shouldn't depend on archive.py (Slice 3a).
+# (Shortname-file I/O/matching, unlike routing logic, lives in the shared
+# shortname.py module and is imported directly -- see CLAUDE.md.)
 _OC_TITLE_RE = re.compile(r"\[\s*original\s*\]", re.IGNORECASE)
 
 CUSTOM_CSS = """
@@ -26,6 +38,12 @@ CUSTOM_CSS = """
     width: auto;
     object-fit: contain;
     margin: 0 auto;
+}
+.confirm-panel {
+    border: 2px solid #d97706;
+    background: rgba(217, 119, 6, 0.1);
+    border-radius: 8px;
+    padding: 12px;
 }
 """
 
@@ -37,6 +55,9 @@ queue = sorted(
 current_index = 0
 last_action = None  # None, or a dict describing the most recent Skip/Reject/Accept
 pending_accept = None  # None, or the parsed values awaiting a map_prompt choice
+
+layout = load_layout()
+shortname_entries = load_shortname_map(layout)
 
 
 def _current_entry():
@@ -54,6 +75,7 @@ def _snapshot(entry):
         "same_series_group": entry.get("same_series_group", False),
         "wallpaper": entry.get("wallpaper", "none"),
         "guess_source": entry.get("guess_source"),
+        "archive_override": entry.get("archive_override"),
     }
 
 
@@ -79,6 +101,10 @@ def _render_current():
             gr.update(visible=False),
             "",
             gr.update(choices=[], value=None),
+            gr.update(interactive=pending_accept is None),
+            gr.update(interactive=pending_accept is None),
+            gr.update(interactive=pending_accept is None),
+            False,
         )
 
     header = f"Reviewing {current_index + 1} of {len(queue)}"
@@ -100,6 +126,7 @@ def _render_current():
     crossover_value = bool(entry.get("crossover", False))
     same_series_group_value = bool(entry.get("same_series_group", False))
     wallpaper_value = entry.get("wallpaper", "none")
+    known_series_value = entry.get("archive_override") == "known_series"
 
     return (
         header,
@@ -116,6 +143,10 @@ def _render_current():
         gr.update(visible=False),
         "",
         gr.update(choices=[], value=None),
+        gr.update(interactive=pending_accept is None),
+        gr.update(interactive=pending_accept is None),
+        gr.update(interactive=pending_accept is None),
+        known_series_value,
     )
 
 
@@ -158,7 +189,7 @@ def on_reject():
 
 
 def _finalize_accept(entry, parsed, map_write):
-    global current_index, last_action
+    global current_index, last_action, shortname_entries
     if parsed["edited"]:
         entry["guess_source"] = "manual"
     entry["character_guess"] = parsed["characters"]
@@ -166,6 +197,32 @@ def _finalize_accept(entry, parsed, map_write):
     entry["crossover"] = parsed["crossover"]
     entry["same_series_group"] = parsed["same_series_group"]
     entry["wallpaper"] = parsed["wallpaper"]
+
+    shortname_write = None
+    if parsed["known_series"]:
+        primary_franchise = parsed["franchise"][0] if parsed["franchise"] else None
+        code = match_shortname(primary_franchise, shortname_entries) if primary_franchise else None
+        if primary_franchise and not code:
+            shortname_path = Path(layout["shortname_file"])
+            proposed = propose_shortname_code(primary_franchise, shortname_entries)
+            if not find_shortname_collision(shortname_path, proposed, primary_franchise):
+                prior_text = shortname_path.read_text(encoding="utf-8") if shortname_path.exists() else None
+                save_shortname_entry(shortname_path, proposed, primary_franchise)
+                if verify_shortname_entry(shortname_path, proposed, primary_franchise):
+                    code = proposed
+                    shortname_entries = load_shortname_map(layout)
+                    shortname_write = {
+                        "path": shortname_path,
+                        "existed_before": prior_text is not None,
+                        "snapshot": prior_text,
+                    }
+        if code:
+            entry["archive_override"] = "known_series"
+        else:
+            entry.pop("archive_override", None)
+    elif entry.get("archive_override") == "known_series":
+        entry.pop("archive_override", None)
+
     entry["status"] = "approved"
     save_manifest(manifest)
 
@@ -175,11 +232,13 @@ def _finalize_accept(entry, parsed, map_write):
         "post_id": queue[current_index],
         "prior": parsed["prior"],
         "map_write": map_write,
+        "shortname_write": shortname_write,
     }
     current_index += 1
 
 
-def on_accept(character_text, franchise_text, crossover_value, same_series_group_value, wallpaper_value):
+def on_accept(character_text, franchise_text, crossover_value, same_series_group_value, wallpaper_value,
+              known_series_value):
     global pending_accept
     entry = _current_entry()
     if entry is None:
@@ -191,6 +250,7 @@ def on_accept(character_text, franchise_text, crossover_value, same_series_group
     new_crossover = bool(crossover_value)
     new_same_series_group = bool(same_series_group_value)
     new_wallpaper = wallpaper_value or "none"
+    new_known_series = bool(known_series_value)
 
     # same_series_group/wallpaper are routing hints, not identity edits --
     # they don't flip guess_source to "manual".
@@ -207,6 +267,7 @@ def on_accept(character_text, franchise_text, crossover_value, same_series_group
         "crossover": new_crossover,
         "same_series_group": new_same_series_group,
         "wallpaper": new_wallpaper,
+        "known_series": new_known_series,
         "edited": edited,
     }
 
@@ -243,6 +304,7 @@ def on_accept(character_text, franchise_text, crossover_value, same_series_group
     base[11] = gr.update(visible=True)
     base[12] = f"r/{subreddit} isn't mapped yet. Remember this for future posts?"
     base[13] = gr.update(choices=choices, value="once")
+    base[17] = new_known_series
     return tuple(base)
 
 
@@ -266,7 +328,7 @@ def on_map_prompt_confirm(choice):
 
 
 def on_undo():
-    global current_index, last_action, pending_accept
+    global current_index, last_action, pending_accept, shortname_entries
     pending_accept = None
     if last_action is None:
         return _render_current()
@@ -286,9 +348,15 @@ def on_undo():
     elif action["type"] == "accept":
         entry = manifest[action["post_id"]]
         entry.update(action["prior"])
+        if action["prior"].get("archive_override") is None:
+            entry.pop("archive_override", None)
         save_manifest(manifest)
         if action.get("map_write"):
             remove_subreddit_map_entry(action["map_write"])
+        if action.get("shortname_write"):
+            sw = action["shortname_write"]
+            undo_shortname_write(sw["path"], sw["existed_before"], sw["snapshot"])
+            shortname_entries = load_shortname_map(layout)
         current_index = action["index"]
 
     return _render_current()
@@ -311,6 +379,7 @@ with gr.Blocks(title="Oshiire review") as demo:
                 wallpaper_box = gr.Radio(
                     choices=["none", "pc", "phone", "both"], value="none", label="Wallpaper"
                 )
+                known_series_box = gr.Checkbox(label="File as Known Series (shortname)")
 
                 with gr.Row():
                     skip_btn = gr.Button("Skip")
@@ -319,7 +388,7 @@ with gr.Blocks(title="Oshiire review") as demo:
 
                 undo_btn = gr.Button("Undo last action")
 
-                with gr.Group(visible=False) as map_prompt_group:
+                with gr.Group(visible=False, elem_classes=["confirm-panel"]) as map_prompt_group:
                     map_prompt_md = gr.Markdown()
                     map_prompt_radio = gr.Radio(choices=[], value=None, label="Remember this subreddit?")
                     map_prompt_confirm_btn = gr.Button("Confirm")
@@ -339,6 +408,10 @@ with gr.Blocks(title="Oshiire review") as demo:
         map_prompt_group,
         map_prompt_md,
         map_prompt_radio,
+        skip_btn,
+        reject_btn,
+        accept_btn,
+        known_series_box,
     ]
 
     demo.load(fn=_render_current, outputs=outputs)
@@ -346,7 +419,8 @@ with gr.Blocks(title="Oshiire review") as demo:
     reject_btn.click(fn=on_reject, outputs=outputs)
     accept_btn.click(
         fn=on_accept,
-        inputs=[character_box, franchise_box, crossover_box, same_series_group_box, wallpaper_box],
+        inputs=[character_box, franchise_box, crossover_box, same_series_group_box, wallpaper_box,
+                known_series_box],
         outputs=outputs,
     )
     map_prompt_confirm_btn.click(fn=on_map_prompt_confirm, inputs=[map_prompt_radio], outputs=outputs)
