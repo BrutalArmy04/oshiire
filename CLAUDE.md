@@ -22,7 +22,8 @@ Full design: see `docs/blueprint.md`.
   polling ("catch new saves"), not a one-shot full-history dump.
 
 ## Tech stack
-- Python 3.11+
+- Python 3.14+ (numpy/imgutils compatibility forces this floor — see the numpy
+  gotcha in README.md's setup instructions)
 - Ingestion: `feedparser` (parses the saved RSS/Atom feed) + `requests` (image
   downloads)
 - AI tagger: WD14 via `imgutils` (installed only when Slice 4 begins)

@@ -7,6 +7,7 @@ torch/imgutils import here or anywhere else.
 import json
 import os
 import re
+import sys
 from collections import namedtuple
 from pathlib import Path
 
@@ -40,6 +41,13 @@ DIVIDER_TOKENS = {"-", ":", "|", "—"}
 
 
 def _load_subreddit_map(path: Path = SUBREDDIT_MAP_PATH) -> dict:
+    if not path.exists():
+        print(
+            f"{path} not found. Copy subreddit_map.example.json to {path} "
+            "(and edit it to match your subs), then retry.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     with path.open("r", encoding="utf-8") as f:
         data = json.load(f)
     return {k.lower(): v for k, v in data.items() if not k.startswith("_")}

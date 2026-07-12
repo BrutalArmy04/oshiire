@@ -10,6 +10,7 @@ drifting apart.
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -17,6 +18,13 @@ LAYOUT_PATH = Path("layout.json")
 
 
 def load_layout(path: Path = LAYOUT_PATH) -> dict:
+    if not path.exists():
+        print(
+            f"{path} not found. Copy layout.example.json to {path} and fill in "
+            "your archive layout, then retry.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
 

@@ -16,8 +16,13 @@ from manifest import load_manifest, save_manifest
 from tag import run_tagging
 
 STAGING_DIR = Path("staging")
-USER_AGENT = "oshiire:v0.1 (personal saved-feed archiver by /u/BrutalArmy)"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+
+
+def _build_user_agent() -> str:
+    username = os.environ.get("REDDIT_USERNAME", "").strip()
+    contact = f"/u/{username}" if username else "contact via GitHub issues"
+    return f"oshiire:v0.1 (personal saved-feed archiver; {contact})"
 LINK_ANCHOR_RE = re.compile(r'<a href="([^"]+)">\[link\]</a>')
 
 # Scopes to a gallery-tile div (class order-agnostic via lookaheads, bounded
@@ -78,14 +83,14 @@ def classify_entry(entry, permalink):
 
 
 def fetch_feed(feed_url):
-    resp = requests.get(feed_url, headers={"User-Agent": USER_AGENT}, timeout=15)
+    resp = requests.get(feed_url, headers={"User-Agent": _build_user_agent()}, timeout=15)
     resp.raise_for_status()
     return feedparser.parse(resp.content)
 
 
 def download_image(url, dest_path):
     resp = requests.get(
-        url, headers={"User-Agent": USER_AGENT}, stream=True, timeout=30
+        url, headers={"User-Agent": _build_user_agent()}, stream=True, timeout=30
     )
     resp.raise_for_status()
     with dest_path.open("wb") as f:
@@ -122,7 +127,7 @@ def fetch_gallery_images(permalink):
         print(f"warning: unexpected permalink host for gallery fetch: {permalink}", file=sys.stderr)
 
     resp = requests.get(
-        permalink, headers={"User-Agent": USER_AGENT, "Cookie": "over18=1"}, timeout=15
+        permalink, headers={"User-Agent": _build_user_agent(), "Cookie": "over18=1"}, timeout=15
     )
     resp.raise_for_status()
     html = resp.text
@@ -234,7 +239,14 @@ def retry_skipped_galleries(manifest):
 
 def main():
     load_dotenv()
-    feed_url = os.environ["REDDIT_SAVED_FEED_URL"]
+    feed_url = os.environ.get("REDDIT_SAVED_FEED_URL")
+    if not feed_url:
+        print(
+            "REDDIT_SAVED_FEED_URL is not set in .env. Copy .env.example to .env, "
+            "then set it to your saved-posts feed URL (old.reddit.com/prefs/feeds).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     manifest = load_manifest()
     STAGING_DIR.mkdir(parents=True, exist_ok=True)

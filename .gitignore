@@ -6,6 +6,7 @@
 .env.*
 *.secret
 praw.ini
+!.env.example
 
 # Personal data derived from YOUR Reddit account.
 # The manifest holds your saved-post titles/URLs; the folders hold your images.
@@ -23,6 +24,11 @@ layout copy.json
 known_series_names.txt
 !layout.example.json
 !known_series_names.example.txt
+
+# Personal subreddit->franchise map -- reveals your specific fandom/taste in
+# detail. Template is committed; the real one is yours and stays local.
+subreddit_map.json
+!subreddit_map.example.json
 
 # AI model weights — large binaries, don't want them in git regardless.
 *.onnx
