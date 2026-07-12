@@ -98,7 +98,7 @@ def _render_current():
             False,
             "none",
             gr.update(interactive=last_action is not None),
-            gr.update(visible=False),
+            gr.update(visible=False, elem_classes=[]),
             "",
             gr.update(choices=[], value=None),
             gr.update(interactive=pending_accept is None),
@@ -140,7 +140,7 @@ def _render_current():
         same_series_group_value,
         wallpaper_value,
         gr.update(interactive=last_action is not None),
-        gr.update(visible=False),
+        gr.update(visible=False, elem_classes=[]),
         "",
         gr.update(choices=[], value=None),
         gr.update(interactive=pending_accept is None),
@@ -301,7 +301,7 @@ def on_accept(character_text, franchise_text, crossover_value, same_series_group
     base[7] = new_crossover
     base[8] = new_same_series_group
     base[9] = new_wallpaper
-    base[11] = gr.update(visible=True)
+    base[11] = gr.update(visible=True, elem_classes=["confirm-panel"])
     base[12] = f"r/{subreddit} isn't mapped yet. Remember this for future posts?"
     base[13] = gr.update(choices=choices, value="once")
     base[17] = new_known_series
@@ -388,7 +388,7 @@ with gr.Blocks(title="Oshiire review") as demo:
 
                 undo_btn = gr.Button("Undo last action")
 
-                with gr.Group(visible=False, elem_classes=["confirm-panel"]) as map_prompt_group:
+                with gr.Group(visible=False) as map_prompt_group:
                     map_prompt_md = gr.Markdown()
                     map_prompt_radio = gr.Radio(choices=[], value=None, label="Remember this subreddit?")
                     map_prompt_confirm_btn = gr.Button("Confirm")
