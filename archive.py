@@ -9,6 +9,7 @@ import argparse
 import os
 import re
 import shutil
+import sqlite3
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -17,10 +18,23 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
+from hash_index import DEFAULT_DB, record_indexed_file
 from manifest import load_manifest, save_manifest
-from shortname import load_layout, load_shortname_map, match_shortname
+from shortname import (
+    load_layout,
+    load_series_aliases,
+    load_shortname_map,
+    lookup_ci,
+    match_shortname,
+    normalize_name_key,
+    resolve_character,
+    resolve_franchise,
+)
 
-ORIGINAL_RE = re.compile(r"\[\s*original\s*\]", re.IGNORECASE)
+ORIGINAL_RE = re.compile(
+    r"\[\s*(?:original(?:\s+character)?|oc|artist(?:['’]s|s)?\s+original)\s*\]",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -37,29 +51,32 @@ def is_original(title: str) -> bool:
     return bool(ORIGINAL_RE.search(title or ""))
 
 
-def resolve_franchise(tag_name: str, layout: dict):
-    """Returns (folder_name_or_None, status) where status is one of
-    "aliased", "identity", "unmapped". A None folder_name with status
-    "aliased" means an explicit null alias (no folder exists yet)."""
-    aliases = layout.get("franchise_aliases", {})
-    if tag_name in aliases:
-        return aliases[tag_name], "aliased"
-    if tag_name in layout.get("franchises", {}):
-        return tag_name, "identity"
-    return None, "unmapped"
+def distinct_characters(character_list, folder_name: str, franchise_def: dict, layout: dict):
+    """Collapse a character list to one item per ACTUAL character, in order.
+
+    Returns [(tag_name, matched_subfolder_or_None)]. Two names collapse when
+    they resolve to the same subfolder (an alias and the folder name itself),
+    or -- for names that resolve to nothing -- when they differ only in
+    spacing/casing/punctuation ("Hu Tao" from a title vs "Hutao" from the
+    subreddit map, which routinely arrive on the same entry).
+
+    Routing counts characters to decide single-character vs Others_Group, so
+    the count has to be of characters, not of spellings: two spellings of one
+    character used to file as a group shot of one person."""
+    identities = []
+    seen = set()
+    for name in character_list:
+        matched = resolve_character(folder_name, franchise_def, name, layout)
+        key = normalize_name_key(matched or name) or (matched or name)
+        if key in seen:
+            continue
+        seen.add(key)
+        identities.append((name, matched))
+    return identities
 
 
-def resolve_character(folder_name: str, franchise_def: dict, character_name: str, layout: dict):
-    if not character_name:
-        return None
-    aliases = layout.get("character_aliases", {}).get(folder_name, {})
-    candidate = aliases.get(character_name, character_name)
-    if candidate in franchise_def.get("characters", []):
-        return candidate
-    return None
-
-
-def route_entry(entry: dict, layout: dict, shortname_entries: list) -> RouteResult:
+def route_entry(entry: dict, layout: dict, shortname_entries: list,
+                series_aliases: Optional[dict] = None) -> RouteResult:
     franchise_list = entry.get("franchise") or []
     character_list = entry.get("character_guess") or []
     crossover = entry.get("crossover", False)
@@ -73,8 +90,11 @@ def route_entry(entry: dict, layout: dict, shortname_entries: list) -> RouteResu
     if entry.get("archive_override") == "unknown_source":
         return RouteResult("move", special["others_unknown_source"], note="manual override")
 
+    if entry.get("archive_override") == "artist_original":
+        return RouteResult("move", special["others_oc"], note="manual override: OC")
+
     if entry.get("archive_override") == "known_series":
-        code = match_shortname(primary_franchise, shortname_entries) if primary_franchise else None
+        code = match_shortname(primary_franchise, shortname_entries, series_aliases) if primary_franchise else None
         if code:
             return RouteResult(
                 "move",
@@ -89,7 +109,7 @@ def route_entry(entry: dict, layout: dict, shortname_entries: list) -> RouteResu
         )
 
     if primary_franchise:
-        folder_name, status = resolve_franchise(primary_franchise, layout)
+        folder_name, status = resolve_franchise(primary_franchise, layout, series_aliases)
 
         if status == "aliased" and folder_name is None:
             return RouteResult(
@@ -98,8 +118,9 @@ def route_entry(entry: dict, layout: dict, shortname_entries: list) -> RouteResu
                 flag_detail=f"franchise_aliases maps '{primary_franchise}' to null -- no folder exists yet",
             )
 
-        if folder_name and folder_name in layout.get("franchises", {}):
-            franchise_def = layout["franchises"][folder_name]
+        matched_folder, franchise_def = lookup_ci(layout.get("franchises", {}), folder_name)
+        if matched_folder is not None:
+            folder_name = matched_folder
             style = franchise_def["style"]
             note = "alias" if status == "aliased" else None
 
@@ -108,27 +129,32 @@ def route_entry(entry: dict, layout: dict, shortname_entries: list) -> RouteResu
 
             if style == "nested":
                 same_series_group = entry.get("same_series_group", False)
-                if same_series_group or len(character_list) >= 2:
+                identities = distinct_characters(character_list, folder_name, franchise_def, layout)
+                if same_series_group or len(identities) >= 2:
                     group_dir = f"{folder_name}/{layout['group_subfolder']}"
                     return RouteResult("move", group_dir, note=note)
 
-                char_name = character_list[0] if character_list else None
-                matched = resolve_character(folder_name, franchise_def, char_name, layout)
+                char_name, matched = identities[0] if identities else (None, None)
                 if matched:
                     return RouteResult("move", f"{folder_name}/{matched}", note=note)
 
                 if franchise_def.get("fallback") == "root":
                     return RouteResult("move", folder_name, note=note)
 
+                # char_name is None when nothing was identified at all (an
+                # empty character list, which is what the taggers now emit
+                # instead of an "Unknown" placeholder) -- say that plainly
+                # rather than flagging a character called 'None'.
+                subject = f"character '{char_name}'" if char_name else "an untagged image"
                 return RouteResult(
                     "flag",
                     flag_reason="needs_folder",
-                    flag_detail=f"No subfolder for character '{char_name}' in {folder_name}",
+                    flag_detail=f"No subfolder for {subject} in {folder_name}",
                 )
 
         # Unmapped (or aliased/identity to a folder that isn't defined) -> try
         # the shortname file before giving up.
-        shortname = match_shortname(primary_franchise, shortname_entries)
+        shortname = match_shortname(primary_franchise, shortname_entries, series_aliases)
         if shortname:
             return RouteResult(
                 "move",
@@ -180,7 +206,8 @@ def _avoid_collision(dest_dir: Path, filename: str):
         n += 1
 
 
-def plan_moves(manifest: dict, layout: dict, shortname_entries: list, archive_dir: Path):
+def plan_moves(manifest: dict, layout: dict, shortname_entries: list, archive_dir: Path,
+               series_aliases: Optional[dict] = None):
     """Returns (rows, skipped_status_counts). Each row is a dict describing
     one approved entry's planned outcome; nothing here touches disk."""
     rows = []
@@ -206,7 +233,7 @@ def plan_moves(manifest: dict, layout: dict, shortname_entries: list, archive_di
             })
             continue
 
-        result = route_entry(entry, layout, shortname_entries)
+        result = route_entry(entry, layout, shortname_entries, series_aliases)
 
         if result.action == "flag":
             rows.append({
@@ -372,8 +399,42 @@ def print_summary(rows, skipped_status_counts) -> None:
     print(f"skipped (not approved): {skipped_total}  ({skipped_str})")
 
 
-def apply_moves(manifest: dict, rows) -> None:
+def _record_in_index(dest_path: Path, dest_rel: str, entry: dict) -> int:
+    """Add a just-filed file to the pHash duplicate index. Returns 1 if written.
+
+    Why here: the moment a file lands in ARCHIVE_DIR it drops out of the review
+    UI's staging corpus, and until the index knows about it, it is compared
+    against NOTHING -- which is how a stale index quietly stops catching real
+    duplicates. The entry already carries the hash imagemeta.py computed at
+    review time, at the index's own depth, so this costs one INSERT and never
+    re-reads the image.
+
+    Best-effort by design. The index is a convenience, `hash_index.py build`
+    is the source of truth for it, and an entry with no cached hash (anything
+    filed before imagemeta.py existed) is simply left for that sweep. Nothing
+    here may ever fail an archiving run: the files have already moved, and the
+    manifest write that records where they went still has to happen.
+    """
+    phash = entry.get("phash")
+    if not phash:
+        return 0
+    try:
+        stat = dest_path.stat()
+        written = record_indexed_file(
+            DEFAULT_DB, dest_rel, phash, stat.st_size, stat.st_mtime,
+            entry.get("width"), entry.get("height"),
+        )
+    except (OSError, sqlite3.Error) as exc:
+        print(f"  warning: could not index {dest_rel}: {exc}", file=sys.stderr)
+        return 0
+    return 1 if written else 0
+
+
+def apply_moves(manifest: dict, rows) -> int:
+    """Execute the planned rows. Returns how many files were added to the pHash
+    index along the way (see _record_in_index)."""
     now = datetime.now(timezone.utc).isoformat()
+    indexed = 0
 
     for row in rows:
         entry = row["entry"]
@@ -391,6 +452,7 @@ def apply_moves(manifest: dict, rows) -> None:
             entry.pop("archive_flag", None)
             entry.pop("archive_flag_detail", None)
             entry.pop("archive_flag_at", None)
+            indexed += _record_in_index(row["dest_path"], row["dest_rel"], entry)
         elif row["outcome"] == "flag":
             entry["archive_flag"] = row["flag_reason"]
             entry["archive_flag_detail"] = row["flag_detail"]
@@ -403,11 +465,17 @@ def apply_moves(manifest: dict, rows) -> None:
                 )
             shutil.copy2(str(row["source_path"]), str(row["dest_path"]))
             entry.setdefault("wallpaper_paths", []).append(row["dest_rel"])
+            # A wallpaper copy is a second archive file of the same artwork, so
+            # it belongs in the index too -- otherwise a `build` sweep would add
+            # it later anyway and the two halves would disagree in between.
+            # find_duplicates collapses the copies back into one banner.
+            indexed += _record_in_index(row["dest_path"], row["dest_rel"], entry)
         # "missing_file"/"copy_missing_directory" rows: nothing to write,
         # entry stays approved (or archived, for a copy still pending its
         # wallpaper directory) for a future run to pick up.
 
     save_manifest(manifest)
+    return indexed
 
 
 def get_archive_dir() -> Path:
@@ -425,6 +493,37 @@ def get_archive_dir() -> Path:
     return archive_dir
 
 
+def check_statuses(manifest: dict) -> None:
+    """Refuse to route a manifest containing an entry with no `status`.
+
+    Every writer sets `status`, so a missing one is corruption -- a half-written
+    entry or a hand-edit -- not an edge case. Routing is keyed entirely off that
+    field, so continuing would mean archiving files on the strength of a record
+    nobody can vouch for.
+
+    This used to surface as a TypeError from print_summary's sort (str vs None),
+    which failed loudly in the right place but named the sort rather than the
+    entry, leaving the operator to go grepping. Failing loudly is correct and is
+    kept; what is added is saying WHICH entries are broken. Runs before the
+    dry-run table so a corrupt manifest can't reach --apply at all.
+    """
+    statusless = sorted(k for k, e in manifest.items()
+                        if not isinstance(e, dict) or not e.get("status"))
+    if not statusless:
+        return
+    shown = statusless[:10]
+    print(
+        f"Malformed manifest: {len(statusless)} entr"
+        f"{'y has' if len(statusless) == 1 else 'ies have'} no 'status' field: "
+        f"{', '.join(shown)}"
+        f"{f' (and {len(statusless) - len(shown)} more)' if len(statusless) > len(shown) else ''}.\n"
+        "Every stage routes off `status`, so these cannot be filed. Fix them in "
+        "manifest.json before archiving.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Route approved manifest entries into the archive.")
     parser.add_argument("--apply", "--execute", dest="apply", action="store_true",
@@ -434,20 +533,23 @@ def main() -> None:
     archive_dir = get_archive_dir()
     layout = load_layout()
     shortname_entries = load_shortname_map(layout)
+    series_aliases = load_series_aliases()
     manifest = load_manifest()
+    check_statuses(manifest)
 
-    rows, skipped_status_counts = plan_moves(manifest, layout, shortname_entries, archive_dir)
+    rows, skipped_status_counts = plan_moves(manifest, layout, shortname_entries, archive_dir, series_aliases)
     print_table(rows)
     print_summary(rows, skipped_status_counts)
 
     if args.apply:
         actionable = [r for r in rows if r["outcome"] in ("move", "flag", "copy")]
-        apply_moves(manifest, actionable)
+        indexed = apply_moves(manifest, actionable)
         moved = sum(1 for r in actionable if r["outcome"] == "move")
         flagged = sum(1 for r in actionable if r["outcome"] == "flag")
         copied = sum(1 for r in actionable if r["outcome"] == "copy")
         print()
         print(f"Applied: moved {moved}, flagged {flagged}, wallpaper-copied {copied}.")
+        print(f"Duplicate index: {indexed} new file(s) recorded in {DEFAULT_DB}.")
     else:
         print()
         print("Dry-run only -- nothing was moved. Re-run with --apply to perform these moves.")

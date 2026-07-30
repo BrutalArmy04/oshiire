@@ -1,6 +1,6 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 set /p CONFIRM=Apply these archive moves now? (y/n):
 if /i not "%CONFIRM%"=="y" (
@@ -9,7 +9,7 @@ if /i not "%CONFIRM%"=="y" (
     exit /b 0
 )
 
-"%~dp0.venv-win\Scripts\python.exe" archive.py --apply
+".venv-win\Scripts\python.exe" archive.py --apply
 if errorlevel 1 (
     echo.
     echo Archive apply FAILED - see error above.

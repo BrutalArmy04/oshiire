@@ -1,0 +1,16 @@
+{"_comment": "EXAMPLE of data/backfill/backfill_log.jsonl -- backfill.py's append-only run log, one JSON object per line. All ids below are invented. DO NOT copy this to backfill_log.jsonl: export_unsave_list.py reads the real log to decide which posts are provably captured, and these fake ids would authorise unsaving posts that were never captured. Lines are never rewritten, only appended, so the file is the permanent record of every routing decision across every run. A line with no post_id (like this one) is ignored by every reader. Field sets differ by outcome; each outcome below appears at least once."}
+{"post_id": "t3_exa1flat", "image_index": null, "outcome": "new", "distance": 27, "matched_path": "Neon Ward/k9_2f81xa4.jpg", "ts": "2026-03-04T09:12:44.118273+00:00"}
+{"post_id": "t3_exb2nest", "image_index": null, "outcome": "owned", "distance": 2, "matched_path": "Starfall Chronicle/Sera/j4_7bd10c2.png", "ts": "2026-03-04T09:12:47.905611+00:00"}
+{"post_id": "t3_exkpend", "image_index": null, "outcome": "uncertain", "distance": 10, "matched_path": "Starfall Chronicle/Sera/k9_2f81xa4.jpg", "ts": "2026-03-04T09:12:51.330184+00:00"}
+{"post_id": "t3_exjagal", "image_index": 1, "outcome": "new", "distance": 31, "matched_path": "Starfall Chronicle/Ines Adler/m2_04ce7b1.jpg", "ts": "2026-03-04T09:15:33.229105+00:00"}
+{"post_id": "t3_exjagal", "image_index": 2, "outcome": "owned", "distance": 4, "matched_path": "Starfall Chronicle/Others_Group/m2_04ce7b2.jpg", "ts": "2026-03-04T09:15:36.884517+00:00"}
+{"post_id": "t3_exdead01", "outcome": "dead", "reason": "removed", "ts": "2026-03-04T09:15:40.117903+00:00"}
+{"post_id": "t3_exdead02", "outcome": "dead", "reason": "no_image", "ts": "2026-03-04T09:15:43.556210+00:00"}
+{"post_id": "t3_exdead03", "outcome": "dead", "reason": "gallery_no_images", "ts": "2026-03-04T09:15:47.002884+00:00"}
+{"post_id": "t3_exdead04", "outcome": "dead", "reason": "fetch_failed", "fetch_error": "ReadTimeout: HTTPSConnectionPool(host='old.reddit.com', port=443): Read timed out. (read timeout=15)", "ts": "2026-03-04T09:15:52.441097+00:00"}
+{"post_id": "t3_exdead05", "outcome": "dead", "reason": "forbidden", "fetch_error": "HTTP 403", "ts": "2026-03-04T09:15:56.884330+00:00"}
+{"post_id": "t3_extomb01", "image_index": null, "outcome": "tombstone", "reason": "imgur-removed", "match_rule": "phash", "distance": 0, "source_link": "https://i.imgur.com/extomb01.png", "permalink": "https://www.reddit.com/r/verdantisles/comments/extomb01/harbour_at_dusk/", "ts": "2026-03-04T09:16:01.229640+00:00"}
+{"post_id": "t3_exfail01", "image_index": null, "outcome": "failed", "reason": "download: HTTPSConnectionPool(host='i.redd.it', port=443): Max retries exceeded", "ts": "2026-03-04T09:16:05.771285+00:00"}
+{"post_id": "t3_exfail02", "image_index": 3, "outcome": "failed", "reason": "hash: UnidentifiedImageError: cannot identify image file", "ts": "2026-03-04T09:16:09.310558+00:00"}
+{"post_id": "t3_exlarch", "outcome": "manifest_skip", "ts": "2026-03-04T09:16:12.884001+00:00"}
+{"post_id": "t3_exdead04", "outcome": "new", "distance": 22, "matched_path": "Verdant Isles/n8_51ab3c9.jpg", "image_index": null, "ts": "2026-03-06T11:04:18.552730+00:00"}

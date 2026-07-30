@@ -1,0 +1,29 @@
+{
+  "_comment": [
+    "TEMPLATE. Alternate series names -> the canonical name, so one series known",
+    "by several titles (English / Japanese / romaji / abbreviation) resolves to",
+    "one place. Every name below is INVENTED and matches the other example",
+    "configs (layout.example.json, known_series_names.example.txt).",
+    "",
+    "Consulted by archive.py's franchise resolution AND by shortname matching, so",
+    "the canonical value is a plain SERIES NAME, never a shortname code -- it then",
+    "follows whatever filing that canonical already has (a layout.json franchise",
+    "folder if one exists, otherwise the shortname file).",
+    "",
+    "Matching is case-insensitive and ignores trailing punctuation, so you only",
+    "need an entry for genuinely different names, not for casing variants.",
+    "Aliases are single-hop: resolve.py resolves the target before storing, so an",
+    "alias never points at another alias.",
+    "",
+    "Normally written for you by resolve.py's 'Use existing shortname' confirm",
+    "panel -- hand-editing is fine too. Copy this file to series_aliases.json",
+    "(same folder) to start your own; the real one stays out of git."
+  ],
+  "aliases": {
+    "Starfall": "Starfall Chronicle",
+    "SFC": "Starfall Chronicle",
+    "スターフォール": "Starfall Chronicle",
+    "The Lantern District": "Lantern District",
+    "Hollow Harbour": "Hollow Harbour Mysteries"
+  }
+}

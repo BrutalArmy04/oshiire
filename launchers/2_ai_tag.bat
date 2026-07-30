@@ -1,8 +1,8 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
-"%~dp0.venv-win\Scripts\python.exe" ai_tag.py
+".venv-win\Scripts\python.exe" ai_tag.py
 if errorlevel 1 (
     echo.
     echo AI tagging FAILED - see error above.

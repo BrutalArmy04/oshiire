@@ -1,0 +1,17 @@
+{
+  "_comment": "Perceptual-hash signatures of image-host 'this image was removed' placeholder cards. These fixed placeholders return HTTP 200 + an image content-type, so a naive fetch treats them as real art. A fetched image matching a signature here is classified DEAD (reason 'tombstone'), never entered into the manifest. This file is GENERIC reference data (host placeholders are the same for everyone), not account-derived, so it is committed. hash_bits must match the archive index (data/archive_index.db, 64-bit pHash). Add new hosts with: python tombstones.py add <url-or-file> --label <name> --host <host>.",
+  "hash_bits": 64,
+  "signatures": [
+    {
+      "label": "imgur-removed",
+      "host": "i.imgur.com",
+      "phash": "c0de6a3e14613de5",
+      "max_distance": 6,
+      "width": 161,
+      "height": 81,
+      "max_size_bytes": 2000,
+      "source_url": "https://i.imgur.com/removed.png",
+      "note": "imgur 'image does not exist' placeholder (503-byte 161x81 image/png). Served with HTTP 200 for a deleted i.imgur.com image."
+    }
+  ]
+}

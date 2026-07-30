@@ -1,6 +1,20 @@
 """Slice 0: fetch the owner's Reddit saved feed, download images to staging/,
 and record pending_review entries in manifest.json. No AI, no UI, no archiving.
+
+Also owns triage for the `skipped` entries it writes -- posts with no
+importable image. Those never reach the review UI (it queues `pending_review`
+only) or resolve.py (flagged entries only), so without a way to see and close
+them they accumulate unseen:
+
+    python ingest.py --list-skipped            # what got skipped, and why
+    python ingest.py --retry-skipped [KEY ...] # re-attempt the gallery fetch
+    python ingest.py --reject-skipped KEY ...  # close one out for good
+
+These live here rather than in review.py because a skipped entry has NO
+downloaded file: putting one in the review queue would hand the UI an entry
+with no image to show, judge, or delete.
 """
+import argparse
 import os
 import re
 import sys
@@ -14,15 +28,11 @@ from dotenv import load_dotenv
 
 from manifest import load_manifest, save_manifest
 from tag import run_tagging
+from useragent import build_user_agent
 
 STAGING_DIR = Path("staging")
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
-
-def _build_user_agent() -> str:
-    username = os.environ.get("REDDIT_USERNAME", "").strip()
-    contact = f"/u/{username}" if username else "contact via GitHub issues"
-    return f"oshiire:v0.1 (personal saved-feed archiver; {contact})"
 LINK_ANCHOR_RE = re.compile(r'<a href="([^"]+)">\[link\]</a>')
 
 # Scopes to a gallery-tile div (class order-agnostic via lookaheads, bounded
@@ -83,14 +93,14 @@ def classify_entry(entry, permalink):
 
 
 def fetch_feed(feed_url):
-    resp = requests.get(feed_url, headers={"User-Agent": _build_user_agent()}, timeout=15)
+    resp = requests.get(feed_url, headers={"User-Agent": build_user_agent()}, timeout=15)
     resp.raise_for_status()
     return feedparser.parse(resp.content)
 
 
 def download_image(url, dest_path):
     resp = requests.get(
-        url, headers={"User-Agent": _build_user_agent()}, stream=True, timeout=30
+        url, headers={"User-Agent": build_user_agent()}, stream=True, timeout=30
     )
     resp.raise_for_status()
     with dest_path.open("wb") as f:
@@ -127,7 +137,7 @@ def fetch_gallery_images(permalink):
         print(f"warning: unexpected permalink host for gallery fetch: {permalink}", file=sys.stderr)
 
     resp = requests.get(
-        permalink, headers={"User-Agent": _build_user_agent(), "Cookie": "over18=1"}, timeout=15
+        permalink, headers={"User-Agent": build_user_agent(), "Cookie": "over18=1"}, timeout=15
     )
     resp.raise_for_status()
     html = resp.text
@@ -182,17 +192,22 @@ def _skip_reason(entry):
     return entry.get("skip_reason") or entry.get("reason")
 
 
-def retry_skipped_galleries(manifest):
+def retry_skipped_galleries(manifest, keys=None):
     """Re-attempts every status=="skipped" entry whose reason is retryable
     (see RETRYABLE_SKIP_REASONS). Runs automatically on every ingest call --
     self-limiting, since each candidate settles into either expanded per-
     image entries or a new, non-retryable skip_reason after one attempt.
-    Returns counts for the summary print."""
+    Returns counts for the summary print.
+
+    `keys` narrows the attempt to specific manifest keys (--retry-skipped);
+    the retryable-reason rule still applies, so naming a settled entry never
+    forces a pointless fetch."""
     counts = {"retried": 0, "expanded": 0, "still_failed": 0, "confirmed_non_gallery": 0}
 
     candidate_keys = [
         key for key, entry in manifest.items()
         if entry.get("status") == "skipped" and _skip_reason(entry) in RETRYABLE_SKIP_REASONS
+        and (keys is None or key in keys)
     ]
 
     for key in candidate_keys:
@@ -237,7 +252,128 @@ def retry_skipped_galleries(manifest):
     return counts
 
 
+# --------------------------------------------------------------------------- #
+# Skipped-entry triage (see module docstring)
+# --------------------------------------------------------------------------- #
+def _skipped_entries(manifest):
+    """Every skipped entry, oldest first -- the order they were encountered."""
+    return sorted(
+        ((key, entry) for key, entry in manifest.items() if entry.get("status") == "skipped"),
+        key=lambda item: item[1].get("fetched_at", ""),
+    )
+
+
+def list_skipped(manifest) -> None:
+    """Print what got skipped and why, marking which reasons ingest is already
+    retrying by itself -- otherwise a self-healing entry looks like one needing
+    a decision."""
+    entries = _skipped_entries(manifest)
+    if not entries:
+        print("No skipped entries -- nothing was passed over at ingest.")
+        return
+
+    print(f"{len(entries)} skipped entr(ies). None has a downloaded image:\n")
+    for key, entry in entries:
+        reason = _skip_reason(entry) or "(no reason recorded)"
+        state = ("retried automatically on every ingest run"
+                 if reason in RETRYABLE_SKIP_REASONS else "settled -- never retried")
+        print(f"  {key}  [{reason}]  -- {state}")
+        print(f"      {entry.get('title', '')}")
+        print(f"      r/{entry.get('subreddit', '')}  {entry.get('permalink', '')}")
+    print(
+        "\nTo act on one:\n"
+        "  python ingest.py --retry-skipped <KEY>    re-attempt the gallery fetch now\n"
+        "  python ingest.py --reject-skipped <KEY>   close it out (status -> rejected)\n"
+        "A rejected entry keeps its manifest record, so dedup never re-downloads it."
+    )
+
+
+def reject_skipped(manifest, keys) -> None:
+    """Mark named skipped entries `rejected` -- the only way to close one out.
+
+    Status is the only field written: there is no staging file to delete (a
+    skipped entry never had one), and `skip_reason` is left in place so the
+    record still explains itself. Dedup keys on the post_id field regardless
+    of status, so this can't cause a re-download; it just stops the entry
+    being retried and reported forever.
+    """
+    changed = []
+    for key in keys:
+        entry = manifest.get(key)
+        if entry is None:
+            print(f"  no such manifest entry: {key}", file=sys.stderr)
+            continue
+        status = entry.get("status")
+        if status != "skipped":
+            print(f"  {key}: status is '{status}', not 'skipped' -- left alone", file=sys.stderr)
+            continue
+        entry["status"] = "rejected"
+        changed.append(key)
+
+    if changed:
+        save_manifest(manifest)
+        print(f"Rejected {len(changed)} skipped entr(ies): {', '.join(changed)}")
+    else:
+        print("Nothing changed.")
+
+
+def retry_skipped(manifest, keys) -> None:
+    """Force the gallery re-fetch now instead of waiting for the next ingest.
+    An empty `keys` means every retryable entry."""
+    targets = set(keys) if keys else None
+    if targets:
+        unknown = [key for key in targets if key not in manifest]
+        for key in unknown:
+            print(f"  no such manifest entry: {key}", file=sys.stderr)
+
+    counts = retry_skipped_galleries(manifest, keys=targets)
+    if counts["retried"]:
+        save_manifest(manifest)
+    print(
+        f"retried={counts['retried']} expanded={counts['expanded']} "
+        f"still_failed={counts['still_failed']} "
+        f"confirmed_non_gallery={counts['confirmed_non_gallery']}"
+    )
+    if not counts["retried"]:
+        print(
+            "Nothing was retryable. Only "
+            f"{', '.join(sorted(RETRYABLE_SKIP_REASONS))} are re-fetchable; "
+            "anything else is a settled non-image post -- use --reject-skipped "
+            "to close it out."
+        )
+
+
+def _parse_args():
+    parser = argparse.ArgumentParser(
+        description="Fetch the saved feed and download new images. "
+                    "Also triages the `skipped` entries ingest records."
+    )
+    parser.add_argument("--list-skipped", action="store_true",
+                        help="List skipped entries (no image was importable) and exit.")
+    parser.add_argument("--retry-skipped", nargs="*", metavar="KEY", default=None,
+                        help="Re-attempt the gallery fetch for the given manifest key(s), "
+                             "or every retryable skipped entry when given none.")
+    parser.add_argument("--reject-skipped", nargs="+", metavar="KEY",
+                        help="Mark the given skipped entr(ies) rejected to close them out.")
+    return parser.parse_args()
+
+
 def main():
+    args = _parse_args()
+
+    # Triage modes read/write only the manifest -- no feed URL, no network
+    # (beyond --retry-skipped's own gallery fetch), so they work even when the
+    # feed is unreachable or unconfigured.
+    if args.list_skipped:
+        list_skipped(load_manifest())
+        return
+    if args.reject_skipped:
+        reject_skipped(load_manifest(), args.reject_skipped)
+        return
+    if args.retry_skipped is not None:
+        retry_skipped(load_manifest(), args.retry_skipped)
+        return
+
     load_dotenv()
     feed_url = os.environ.get("REDDIT_SAVED_FEED_URL")
     if not feed_url:

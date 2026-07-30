@@ -11,6 +11,8 @@ import sys
 from collections import namedtuple
 from pathlib import Path
 
+from shortname import dedupe_names
+
 Guess = namedtuple("Guess", ["name", "confidence", "source"])
 
 SUBREDDIT_MAP_PATH = Path("subreddit_map.json")
@@ -30,6 +32,12 @@ BRACKET_RE = re.compile(r"\[([^\[\]]*)\]")
 ID_MARKER_RE = re.compile(r"^\s*(i\s*:\s*\d+|pixiv\s*\d+)\s*$", re.IGNORECASE)
 META_TAGS = {"media", "discussion"}
 BY_CREDIT_RE = re.compile(r"^by\b", re.IGNORECASE)
+# OC bracket phrasings that should all be treated as an "original" signal
+# (tag Unknown, no franchise), not mis-read as a franchise/character list.
+OC_BRACKET_RE = re.compile(
+    r"^(?:original(?:\s+character)?|oc|artist(?:['’]s|s)?\s+original)$",
+    re.IGNORECASE,
+)
 
 TOKEN_RE = re.compile(
     r"&|,|\band\b|×|[A-Za-z][A-Za-z0-9'\-]*|\d+[A-Za-z][A-Za-z0-9'\-]*|[-:|—]",
@@ -175,7 +183,7 @@ def extract_bracket(title: str):
     lowered = content.lower()
     if lowered in META_TAGS:
         return remaining, "meta", content
-    if lowered == "original":
+    if OC_BRACKET_RE.match(content):
         return remaining, "original", content
     if ID_MARKER_RE.match(content):
         return remaining, "id", content
@@ -281,8 +289,15 @@ def split_name_list(text: str):
 
 
 def merge_character_names(canonical: str, title_names):
-    """Dedupes title_names against the map's canonical character name
-    (substring match, case-insensitive), keeping canonical spelling first."""
+    """Dedupes title_names against the map's canonical character name, keeping
+    canonical spelling first.
+
+    Two rules, because they catch different collisions. Substring matching
+    (case-insensitive) handles a partial name -- "Ayaka" inside "Kamisato
+    Ayaka". dedupe_names then collapses names that differ only in
+    spacing/punctuation, which substring matching cannot see: the map's
+    "Hutao" and a title's "Hu Tao" contain neither one another, and used to
+    both survive into the same character list."""
     result = [canonical]
     canonical_lower = canonical.lower()
     for name in title_names:
@@ -291,7 +306,7 @@ def merge_character_names(canonical: str, title_names):
             continue
         if name not in result:
             result.append(name)
-    return result
+    return dedupe_names(result)
 
 
 def _build_character_index(sub_map: dict) -> dict:
@@ -385,6 +400,11 @@ def _tag_from_metadata(post_metadata: dict, sub_map: dict, character_index: dict
     else:
         names = extract_leading_names(remaining)
 
+    # Same collapse merge_character_names applies on the subreddit path: a
+    # title can list one character twice under two spellings, and the group
+    # /crossover logic below counts names, so the dedupe has to happen first.
+    names = dedupe_names(names)
+
     if names:
         if len(names) >= 2:
             franchise_list, crossover = _apply_group_crossover(names, character_index, franchise)
@@ -398,9 +418,15 @@ def _tag_from_metadata(post_metadata: dict, sub_map: dict, character_index: dict
         confidence = _confidence_for_title_names(names)
         return franchise_list, crossover, Guess(names, confidence, "title")
 
+    # No character resolved. The list stays EMPTY rather than carrying an
+    # "Unknown" placeholder: downstream (folder matching, alias lookup, the
+    # review field, the group-vs-single count) a placeholder is indistinguishable
+    # from a real name, so it has to be filtered out everywhere or it silently
+    # becomes one. An empty list says the same thing and cannot be mistaken for
+    # a character. `guess_confidence` still records how much was known.
     franchise_list = [franchise] if franchise else []
     confidence = "low" if franchise else "zero"
-    return franchise_list, False, Guess(["Unknown"], confidence, "title")
+    return franchise_list, False, Guess([], confidence, "title")
 
 
 def guess_franchise_and_character(post_metadata: dict):

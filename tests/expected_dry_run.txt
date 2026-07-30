@@ -1,0 +1,14 @@
+post_id      | franchise                          | character(s)          | action | destination                                      | note                           
+t3_exa1flat  | Neon-Ward                          | Mika Sorel            | MOVE   | Neon Ward/t3_exa1flat.jpg                        | (alias)                        
+t3_exa1flat  | Neon-Ward                          | Mika Sorel            | COPY   | Wallpaper/PC/t3_exa1flat.jpg                     | (wallpaper copy (pc))          
+t3_exb2nest  | Starfall Chronicle                 | Seraphine Voss        | MOVE   | Starfall Chronicle/Sera/t3_exb2nest.png          |                                
+t3_exc3grp   | Starfall Chronicle                 | Kestrel, Marlow Quinn | MOVE   | Starfall Chronicle/Others_Group/t3_exc3grp.jpg   |                                
+t3_exd4root  | Lantern District                   | Nao Fujimi            | MOVE   | Lantern District/t3_exd4root.jpg                 |                                
+t3_exe5cross | Starfall Chronicle, Neon Ward      | Sera, Mika Sorel      | MOVE   | Crossover/t3_exe5cross.png                       | (crossover)                    
+t3_exf6short | Verdant Isles                      | Tomo Aketa            | MOVE   | Others/Known Series/t3_exf6short_VI.jpg          | (shortname)                    
+t3_exf6short | Verdant Isles                      | Tomo Aketa            | COPY   | Wallpaper/Phone/t3_exf6short_VI.jpg              | (wallpaper copy (phone))       
+t3_exg7ks    | Neon Ward                          | -                     | MOVE   | Others/Known Series/t3_exg7ks_NW.jpg             | (manual override: known series)
+t3_exh8oc    | -                                  | -                     | MOVE   | Others/Artist's Original/t3_exh8oc.png           | (manual override: OC)          
+t3_exi9unk   | Some Series You Have Not Filed Yet | -                     | MOVE   | Others/Unknown Sauce/t3_exi9unk.jpg              | (manual override)              
+t3_exjagal_1 | Starfall Chronicle                 | The Cartographer      | MOVE   | Starfall Chronicle/Ines Adler/t3_exjagal_1.jpg   |                                
+t3_exjagal_2 | Starfall Chronicle                 | Sera                  | MOVE   | Starfall Chronicle/Others_Group/t3_exjagal_2.jpg |

@@ -1,14 +1,36 @@
 {
-  "_comment": "TEMPLATE seed map for Oshiire metadata tagging. COMMITTED as documentation of the format -- copy this to subreddit_map.json (gitignored) and fill in your own subs. Two entry shapes: character-specific subs give both franchise and character; franchise/art subs give only a franchise (character is parsed from the title) or null (parse title for franchise too). Keys are lowercase subreddit names; matched case-insensitively.",
-  "raidenmains": {
-    "franchise": "Genshin Impact",
-    "character": "Raiden Shogun"
+  "_comment": "TEMPLATE seed map for Oshiire metadata tagging. COMMITTED as documentation of the format -- copy this to subreddit_map.json (gitignored) and replace these with your own subs. Every subreddit and franchise below is INVENTED; they exist to show the two entry shapes, not to seed a real collection. Shape A (character-specific sub): both 'franchise' and 'character', which is the highest-confidence signal there is -- the title is not consulted at all. Shape B (franchise/art sub): 'franchise' only, so the character is parsed out of the post title; or 'franchise': null for a generic art sub, where the title has to supply both. Keys are lowercase subreddit names and are matched case-insensitively. Any key starting with '_' is ignored by the loader, so comments like this one are safe anywhere in the file. You do NOT need to pre-populate this: the review UI offers to add a subreddit the first time it sees one it doesn't recognise.",
+
+  "seravossmains": {
+    "franchise": "Starfall Chronicle",
+    "character": "Sera",
+    "_note": "Shape A. The 'Mains' suffix is stripped by the sub-name parser, but an explicit entry is still better -- it fixes the SPELLING ('Sera', the folder name) instead of whatever the sub name happens to shorten to."
   },
-  "pokegals": {
-    "franchise": "Pokémon"
+  "churchofkestrel": {
+    "franchise": "Starfall Chronicle",
+    "character": "Kestrel",
+    "_note": "Shape A. Known prefixes (ChurchOf, OneTrue) are stripped too."
   },
-  "awwnime": {
+  "starfallchronicle": {
+    "franchise": "Starfall Chronicle",
+    "_note": "Shape B. Franchise is certain, character comes from the title: '[Sera] fan art (@artist)' -> Sera. Group shots joined by and/&/commas become a multi-name character_guess."
+  },
+  "lanterndistrict": {
+    "franchise": "Lantern District"
+  },
+  "neonwardgirls": {
+    "franchise": "Neon Ward",
+    "_note": "Shape B for a FLAT franchise: the character is still parsed and stored, it just doesn't affect filing (flat means no character subfolders)."
+  },
+  "verdantisles": {
+    "franchise": "Verdant Isles",
+    "_note": "Shape B for a series filed by shortname. Nothing extra is needed here -- routing finds 'VI' in the shortname file once layout.json has no folder for it."
+  },
+  "hollowharbour": {
+    "franchise": "Hollow Harbour Mysteries"
+  },
+  "exampleoriginalart": {
     "franchise": null,
-    "_note": "generic SFW anime art sub; often [original] = OC, tag Unknown"
+    "_note": "Shape B, generic art sub: no franchise is implied, so the title supplies everything. A title tagged '[original]' is an OC signal -- no character AND no franchise, routed to Others/Artist's Original."
   }
 }

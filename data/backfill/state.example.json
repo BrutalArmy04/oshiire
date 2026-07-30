@@ -1,0 +1,36 @@
+{
+  "_comment": [
+    "EXAMPLE of data/backfill/state.json -- backfill.py's resumable cursor.",
+    "Illustrative invented numbers, from a hypothetical ~40k-row export.",
+    "DO NOT COPY THIS TO state.json. backfill.py creates the real file itself on",
+    "its first run; copying this one would fast-forward the cursor past 5,000",
+    "unprocessed rows. This exists only so a stalled sweep can be diagnosed.",
+    "",
+    "next_row  the CSV row the next run resumes from. Advanced only at a",
+    "          checkpoint (every 50 rows) and always AFTER the manifest is saved,",
+    "          so a crash re-does work rather than losing it. --offset overrides",
+    "          it for one run without moving it; --retry-failed never touches it.",
+    "totals    cumulative outcome counts across every run, not just the last one.",
+    "          They are per-IMAGE, while `processed` is per-ROW, so on an export",
+    "          with galleries in it the buckets legitimately sum to MORE than",
+    "          processed (here 5,164 vs 5,000).",
+    "hash_bits the pHash depth of the index this sweep was calibrated against.",
+    "          Recorded so a later run against a differently-built index is",
+    "          detectable -- distances across depths are meaningless.",
+    "updated_at UTC, rewritten at every checkpoint. If this stops advancing while",
+    "          a sweep appears to be running, the sweep is wedged, not working."
+  ],
+  "next_row": 5000,
+  "totals": {
+    "manifest_skip": 380,
+    "owned": 260,
+    "uncertain": 95,
+    "new": 2004,
+    "dead": 2310,
+    "failed": 42,
+    "tombstone": 73,
+    "processed": 5000
+  },
+  "hash_bits": 64,
+  "updated_at": "2026-03-05T18:33:26.760497+00:00"
+}

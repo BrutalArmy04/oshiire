@@ -12,9 +12,15 @@ praw.ini
 # The manifest holds your saved-post titles/URLs; the folders hold your images.
 # None of this belongs in a remote, even a private one.
 staging/
+# Guard for the default-config case only. The archive normally lives OUTSIDE the
+# repo -- ARCHIVE_DIR in .env is an absolute path, and nothing in the project
+# writes to a relative `archive/`. This rule matches nothing in a correctly
+# configured checkout; it is here so that someone who points ARCHIVE_DIR at
+# `./archive` while trying things out cannot commit their images by accident.
 archive/
 manifest.json
 *.manifest.json
+!manifest.example.json
 
 # Personal archive layout (describes YOUR whole collection). Templates are
 # committed; the real ones are yours and stay local.
@@ -25,10 +31,40 @@ known_series_names.txt
 !layout.example.json
 !known_series_names.example.txt
 
+# Alternate series names you've taught resolve.py (variant -> canonical).
+# Same class as subreddit_map.json: reveals your specific collection in detail.
+# Template is committed; the real one is yours and stays local.
+data/series_aliases.json
+!data/series_aliases.example.json
+
 # Personal subreddit->franchise map -- reveals your specific fandom/taste in
 # detail. Template is committed; the real one is yours and stays local.
 subreddit_map.json
 !subreddit_map.example.json
+
+# Perceptual-hash index of the local archive (hash_index.py). Derived cache of
+# your personal archive contents -- stays local.
+data/archive_index.db
+data/archive_index.db-journal
+data/archive_index.db-wal
+data/archive_index.db-shm
+
+# Reddit saved-posts export -- personal account data. Template is committed so
+# the backfill sweep can be dry-run before you request your own export.
+data/saved_posts.csv
+!data/saved_posts.example.csv
+
+# Bulk-unsave whitelist built by export_unsave_list.py from the manifest +
+# backfill log -- a list of YOUR post ids. Account-derived; stays local.
+data/unsave_list.json
+!data/unsave_list.example.json
+
+# Perceptual-hash signatures of image-host "removed" placeholder cards
+# (tombstones.py). Deliberately NOT ignored: host placeholders are the same for
+# everyone, so this is generic reference data, not account-derived. Listed here
+# only so its absence from the ignore rules reads as a decision, not an
+# oversight.
+#   data/tombstones.json  <- committed on purpose
 
 # AI model weights — large binaries, don't want them in git regardless.
 *.onnx
@@ -40,7 +76,16 @@ models/
 __pycache__/
 *.py[cod]
 *.egg-info/
-.venv/
+# Virtualenvs. `.venv*/` and not `.venv/`: this project keeps more than one --
+# `.venv-win` (Windows, py3.14) alongside `.venv` (Linux, py3.12) -- and a
+# literal `.venv/` matches neither the suffixed name nor any future variant.
+# .venv-win alone is ~20,000 files / ~680 MB of site-packages (numpy, scipy,
+# opencv-contrib, onnxruntime, gradio, pandas, scikit-learn, plus .libs binary
+# trees), so a miss here is not a small mistake. Verify by EXIT CODE, not by
+# `-v` output -- a negation match also exits 0, which reads as a false
+# "ignored":
+#     git check-ignore -q .venv-win/ && echo ignored
+.venv*/
 venv/
 env/
 .pytest_cache/
@@ -53,3 +98,32 @@ env/
 Thumbs.db
 .idea/
 .vscode/
+
+# Claude Code local state. Currently holds only settings.local.json (per-machine
+# tool-permission grants) and scheduled_tasks.lock (a session id + pid), neither
+# of which is shareable or meaningful on another machine. The whole directory is
+# ignored rather than just those two files: if project-level slash commands or
+# agents are added later they'd live under .claude/commands/ or .claude/agents/,
+# and those WOULD be worth publishing -- at which point narrow this to
+# `.claude/settings.local.json` + `.claude/*.lock` instead of widening what
+# leaks by default.
+.claude/
+
+calibration/
+
+# Back-catalogue backfill working dir (backfill.py): resumable cursor, run log,
+# and temp downloads -- all derived from your personal CSV + archive. Stays local.
+#
+# Written as `data/backfill/*` and NOT `data/backfill/`: git cannot re-include a
+# file underneath an EXCLUDED DIRECTORY, so with a trailing-slash rule here the
+# `!` line below would silently do nothing (git never descends into the dir to
+# see it). Excluding the dir's *contents* instead leaves the directory itself
+# traversable, so the committed .example.* templates survive. Verify with:
+#     git check-ignore -v data/backfill/state.json          # -> ignored
+#     git check-ignore -v data/backfill/state.example.json  # -> no match
+data/backfill/*
+!data/backfill/*.example.*
+
+# Internal working notes: open work, settled decisions, release TODOs. Not part
+# of the public release -- CLAUDE.md and docs/SETUP.md are what ship.
+docs/PROJECT_CONTEXT.md

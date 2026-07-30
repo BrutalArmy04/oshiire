@@ -1,9 +1,10 @@
 {
-  "_comment": "TEMPLATE layout for Oshiire archiving. COMMITTED to the repo as documentation of the format. Copy this to layout.json (which is gitignored) and fill in YOUR real archive. Style per franchise: 'nested' = Franchise/Character/ subfolders; 'flat' = everything in Franchise/ with no subfolders; 'shortname' = art from a lightly-collected series goes in a shared folder with a _SHORTNAME suffix in the filename, decoded by the shortname file. Unmatched characters are flagged in the review UI, never auto-created -- UNLESS a nested franchise sets the optional 'fallback': 'root' (see the example below), in which case an unmatched character routes to the franchise's own top-level folder instead of flagging. Aliases map the franchise/character names your tagger produces to the actual folder names on disk.",
+  "_comment": "TEMPLATE layout for Oshiire archiving. COMMITTED to the repo as documentation of the format. Copy this to layout.json (which is gitignored) and replace the invented franchises below with your own. Every franchise/character name in this file is made up so it can never collide with a real archive -- the point is the SHAPE, not the names. Style per franchise: 'nested' = Franchise/Character/ subfolders; 'flat' = everything in Franchise/ with no subfolders; 'shortname' = art from a lightly-collected series goes in a shared folder with a _CODE suffix in the filename, decoded by the shortname file (a shortname series needs NO entry here at all -- see 'Verdant Isles' in known_series_names.example.txt). Unmatched characters are flagged in the review UI, never auto-created -- UNLESS a nested franchise sets the optional 'fallback': 'root', in which case an unmatched character routes to the franchise's own top-level folder instead of flagging. Aliases map the franchise/character names your tagger produces to the actual folder names on disk.",
 
   "archive_dir_env": "ARCHIVE_DIR",
   "group_subfolder": "Others_Group",
 
+  "_special_folders_comment": "Destination folders that are not a franchise. Paths are relative to ARCHIVE_DIR and may contain a '/' to nest (as the three Others/ ones do). 'crossover' catches any entry with crossover:true regardless of franchise; the wallpaper_* trio composes as <wallpaper_root>/<wallpaper_pc|wallpaper_phone>. Rename the leaf folders to whatever your archive actually uses -- e.g. this user's phone folder is not called 'Phone'.",
   "special_folders": {
     "crossover": "Crossover",
     "wallpaper_root": "Wallpaper",
@@ -16,23 +17,39 @@
 
   "shortname_file": "known_series_names.txt",
 
-  "franchise_aliases": {
-    "Example Franchise Full Name": "Example Folder Name"
+  "_wallpaper_rules_comment": "OPTIONAL. Thresholds the review UI uses to SUGGEST a wallpaper target from the image's pixel dimensions -- it highlights the suggested option with a star and prints the dimensions, but never selects anything for you. Omit this whole block to use the defaults shown below; include just the keys you want to change (they merge per-key over the defaults, so overriding pc.min_width alone leaves everything else intact). aspect is width/height, so PC values are > 1 and phone values < 1. 'both' is only ever suggested when the image independently satisfies BOTH rule sets -- with these disjoint aspect bands that essentially never happens, which is intentional: 'both' stays a deliberate manual choice.",
+  "wallpaper_rules": {
+    "pc":    { "min_width": 1920, "min_height": 1080, "aspect_min": 1.30, "aspect_max": 2.40 },
+    "phone": { "min_width": 1080, "min_height": 1920, "aspect_min": 0.40, "aspect_max": 0.75 }
   },
 
+  "_franchise_aliases_comment": "Franchise name your tagger produces -> the folder name on disk, for when they genuinely differ. Matching is already case-insensitive and tolerant of trailing punctuation, so you do NOT need an entry for a casing variant. A null value means 'I know this series, but it has no folder yet' -- those entries are flagged at dry-run instead of routed, which is how you find out you need to make a decision about them.",
+  "franchise_aliases": {
+    "Starfall Chronicles": "Starfall Chronicle",
+    "Neon-Ward": "Neon Ward",
+    "Some Series You Have Not Filed Yet": null
+  },
+
+  "_character_aliases_comment": "Per-franchise character name -> subfolder name. Keyed by the franchise FOLDER name, because two franchises can have different characters sharing one short name. Spacing, casing, punctuation and two-token name order are already tolerated, so only genuinely different names need an entry here. The review UI offers to write these for you when you type a name that resolves to no subfolder -- nothing is saved unless you confirm.",
   "character_aliases": {
-    "Example Nested Franchise": {
-      "Tagged Character Name": "Folder Character Name"
+    "Starfall Chronicle": {
+      "Seraphine Voss": "Sera",
+      "The Cartographer": "Ines Adler",
+      "Kestrel (Starfall)": "Kestrel"
     }
   },
 
   "franchises": {
-    "Example Nested Franchise": {
+    "Starfall Chronicle": {
       "style": "nested",
-      "characters": ["Character A", "Character B", "Character C"],
+      "characters": ["Sera", "Ines Adler", "Kestrel", "Marlow Quinn"]
+    },
+    "Lantern District": {
+      "style": "nested",
+      "characters": ["Yuzu Hoshimi"],
       "fallback": "root"
     },
-    "Example Flat Franchise": {
+    "Neon Ward": {
       "style": "flat"
     }
   }

@@ -1,8 +1,23 @@
 # Shortname mapping for the "Others/Known Series" filing style.
-# One per line: SHORTNAME = Full Series Name
-# Art from these series goes in Others/Known Series/ with the shortname as a
-# filename suffix (e.g. some_art_BtR.jpg) instead of its own folder.
-# COMMITTED as an example; your real file is gitignored.
-BtR = Bocchi the Rock
-SnF = Sousou no Frieren
-OPM = One Punch Man
+#
+# FORMAT: one mapping per line, `SHORTNAME = Full Series Name`.
+#   - The separator is `=`. Everything before the first `=` is the code,
+#     everything after it is the full name; both are whitespace-stripped, so
+#     `BtR=Bocchi the Rock` and `BtR   =   Bocchi the Rock` are identical.
+#   - Blank lines and lines starting with `#` are ignored.
+#   - A line with no `=` is ignored (not an error) -- so free-form notes are
+#     safe as long as they contain no equals sign.
+#   - Codes are matched case-insensitively, so `BtR` and `btr` are the SAME
+#     code; two series must never share one, or the suffix can't be decoded.
+#
+# Art from these series goes in Others/Known Series/ with the code appended to
+# the filename (e.g. `k9_2f81xa4.jpg` -> `k9_2f81xa4_VI.jpg`) instead of
+# getting a folder of its own. A series listed here needs NO entry in
+# layout.json's "franchises" block -- the shortname file IS its configuration.
+#
+# COMMITTED as an example; copy it to known_series_names.txt (gitignored),
+# which is the filename layout.example.json's "shortname_file" points at.
+# The names below are invented, and match layout.example.json.
+VI = Verdant Isles
+NW = Neon Ward
+HHM = Hollow Harbour Mysteries

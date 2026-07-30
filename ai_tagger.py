@@ -79,7 +79,10 @@ def guess_franchise_and_character_ai(image_path, franchise_hint=None):
         ]
 
     if not candidates:
-        return franchise_hint, Guess(["Unknown"], "zero", "ai")
+        # Empty list, not an "Unknown" placeholder -- see the same decision in
+        # tagger.py's no-name path. "zero" confidence is what says the model
+        # found nothing; the character list must only ever hold real names.
+        return franchise_hint, Guess([], "zero", "ai")
 
     candidates.sort(key=lambda c: c[2], reverse=True)
     top_score = candidates[0][2]

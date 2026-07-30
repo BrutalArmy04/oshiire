@@ -3,10 +3,25 @@ python-dotenv>=1.0
 requests>=2.31
 gradio>=4.0
 
+# Python 3.14. Older versions are untested and unsupported: nothing in the
+# syntax needs 3.14 (int.bit_count(), 3.10+, is the highest requirement), but
+# the stack below -- dghs-imgutils, onnxruntime, Pillow, imagehash, gradio --
+# has only ever been installed and run on 3.14.
+#
 # Slice 4 (AI fallback tagger). dghs-imgutils pins numpy<2, but numpy<2 has no
-# prebuilt wheel for Python 3.14 -- pip falls back to an experimental
+# prebuilt wheel for Python 3.13+ -- pip falls back to an experimental
 # MINGW-built numpy that segfaults on import. onnxruntime/opencv/imgutils all
-# work fine with numpy 2.x despite the stale pin, so after installing this
-# file, also run: pip install --upgrade numpy
+# work fine with numpy 2.x despite the stale pin, so after installing this file,
+# also run: pip install --upgrade numpy
+# (That override is a 3.13+ property. On 3.12 and earlier the pin resolves to a
+# real wheel -- irrelevant at the supported version, but it is the line that
+# says whether to bother if you are experimenting on an older interpreter.)
 dghs-imgutils
 onnxruntime
+
+# Perceptual hashing: the archive index (hash_index.py), the backfill sweep,
+# AND the review UI's duplicate warning + wallpaper dimension hints
+# (imagemeta.py) -- not optional if you use review.py. imagehash pulls scipy +
+# numpy transitively; see the numpy-on-3.14 note above.
+Pillow
+imagehash
