@@ -15,7 +15,13 @@ from dotenv import load_dotenv
 from starlette.exceptions import StarletteDeprecationWarning
 
 from manifest import load_manifest, save_manifest
-from tagger import remove_subreddit_map_entry, save_subreddit_map_entry, subreddit_is_mapped
+from tagger import (
+    normalize_subreddit,
+    read_subreddit_map,
+    remove_subreddit_map_entry,
+    save_subreddit_map_entry,
+    subreddit_is_mapped,
+)
 from imagemeta import (
     build_archive_path_map,
     ensure_image_meta,
@@ -446,46 +452,65 @@ def _undo_button():
 
 
 def _render_current(status=""):
+    """Return a FULL repaint as {component: value}.
+
+    Keyed by component object rather than positionally: Gradio maps such a dict
+    into `outputs` order itself (convert_component_dict_to_list), so adding a
+    control to the UI can no longer silently shift a hardcoded index and write
+    a correct value into the wrong widget.
+
+    EVERY one of the components in `outputs` is present on BOTH branches, on
+    purpose. Gradio would happily fill an omitted one with skip(), but a partial
+    repaint is what previously let typed field values silently revert -- so the
+    dict is complete and the callers below override by name.
+
+    The component names are module-level globals created in the `with
+    gr.Blocks()` block far below. They resolve at CALL time, which is always
+    after that block has executed, so defining this function first is fine.
+    """
     entry = _current_entry()
     if entry is None:
-        return (
-            status or "All reviewed — nothing left in the queue.",
-            gr.update(visible=False),
-            None,
-            "",
-            "",
-            "",
-            "",
-            False,
-            False,
-            gr.update(choices=_wallpaper_choices([]), value="none"),
-            _undo_button(),
-            gr.update(visible=False, elem_classes=[]),
-            "",
-            gr.update(choices=[], value=None),
-            gr.update(interactive=pending_accept is None),
-            gr.update(interactive=pending_accept is None),
-            gr.update(interactive=pending_accept is None),
-            False,
-            False,
-            gr.update(visible=False, elem_classes=[]),
-            "",
-            None,
-            "",
-            gr.update(visible=False),
-            gr.update(visible=False, elem_classes=[]),
-            "",
-            gr.update(choices=[], value=None),
-        )
+        return {
+            header_md: status or "All reviewed — nothing left in the queue.",
+            review_group: gr.update(visible=False),
+            image: None,
+            title_md: "",
+            meta_md: "",
+            character_box: "",
+            franchise_box: "",
+            crossover_box: False,
+            same_series_group_box: False,
+            wallpaper_box: gr.update(choices=_wallpaper_choices([]), value="none"),
+            undo_btn: _undo_button(),
+            map_prompt_group: gr.update(visible=False, elem_classes=[]),
+            map_prompt_md: "",
+            map_prompt_radio: gr.update(choices=[], value=None),
+            skip_btn: gr.update(interactive=pending_accept is None),
+            reject_btn: gr.update(interactive=pending_accept is None),
+            accept_btn: gr.update(interactive=pending_accept is None),
+            known_series_box: False,
+            oc_box: False,
+            dup_group: gr.update(visible=False, elem_classes=[]),
+            dup_md: "",
+            dup_thumb_img: None,
+            wallpaper_hint_md: "",
+            dup_action_btn: gr.update(visible=False),
+            char_alias_group: gr.update(visible=False, elem_classes=[]),
+            char_alias_md: "",
+            char_alias_dropdown: gr.update(choices=[], value=None),
+        }
 
     header = f"Reviewing {current_index + 1} of {len(queue)}"
     if status:
         header = f"{header} — {status}"
-    title_md = f"### {entry.get('title', '')}"
+    # Locals are named *_text / *_update, never after a component: the dict
+    # below keys on the component objects, so a local of the same name would
+    # shadow one and the key would silently become a plain string.
+    title_text = f"### {entry.get('title', '')}"
     local_path = entry.get("local_path")
     image_path = str(Path(local_path).resolve()) if local_path else None
     permalink = entry.get("permalink", "")
-    meta_md = (
+    meta_text = (
         f"**Subreddit:** r/{entry.get('subreddit', '')}  \n"
         f"**Link:** [{permalink}]({permalink})  \n"
         f"**Guess confidence:** {entry.get('guess_confidence')} · "
@@ -493,7 +518,7 @@ def _render_current(status=""):
     )
     is_oc = not entry.get("franchise") and bool(_OC_TITLE_RE.search(entry.get("title", "")))
     if is_oc:
-        meta_md += "\n\n**Original character (OC)** — will file to `Others/Artist's Original`."
+        meta_text += "\n\n**Original character (OC)** — will file to `Others/Artist's Original`."
     character_text = "\n".join(entry.get("character_guess", []))
     franchise_text = "\n".join(entry.get("franchise", []))
     crossover_value = bool(entry.get("crossover", False))
@@ -510,52 +535,52 @@ def _render_current(status=""):
             save_manifest(manifest)
     suggested = suggest_wallpaper(entry.get("width"), entry.get("height"), wallpaper_rules)
     try:
-        dup_group, dup_text, dup_thumb, dup_action = _duplicate_banner(
+        dup_group_update, dup_text, dup_thumb, dup_action = _duplicate_banner(
             queue[current_index], entry
         )
     except Exception as exc:
-        # A duplicate warning is advisory. It shares one flat output tuple with
-        # every other control, so a raise here would cost the reviewer the whole
+        # A duplicate warning is advisory. It shares one repaint with every
+        # other control, so a raise here would cost the reviewer the whole
         # panel -- image, fields and buttons all stale. Degrade to no banner.
         print(f"  warning: duplicate check failed for {queue[current_index]}: {exc}")
-        dup_group, dup_text, dup_thumb = gr.update(visible=False, elem_classes=[]), "", None
+        dup_group_update, dup_text, dup_thumb = gr.update(visible=False, elem_classes=[]), "", None
         dup_action = gr.update(visible=False)
 
-    return (
-        header,
-        gr.update(visible=True),
-        image_path,
-        title_md,
-        meta_md,
-        character_text,
-        franchise_text,
-        crossover_value,
-        same_series_group_value,
-        gr.update(choices=_wallpaper_choices(suggested), value=wallpaper_value),
-        _undo_button(),
-        gr.update(visible=False, elem_classes=[]),
-        "",
-        gr.update(choices=[], value=None),
-        gr.update(interactive=pending_accept is None),
-        gr.update(interactive=pending_accept is None),
-        gr.update(interactive=pending_accept is None),
-        known_series_value,
-        oc_value,
-        dup_group,
-        dup_text,
-        dup_thumb,
-        _wallpaper_hint(entry, suggested),
-        dup_action,
-        gr.update(
+    return {
+        header_md: header,
+        review_group: gr.update(visible=True),
+        image: image_path,
+        title_md: title_text,
+        meta_md: meta_text,
+        character_box: character_text,
+        franchise_box: franchise_text,
+        crossover_box: crossover_value,
+        same_series_group_box: same_series_group_value,
+        wallpaper_box: gr.update(choices=_wallpaper_choices(suggested), value=wallpaper_value),
+        undo_btn: _undo_button(),
+        map_prompt_group: gr.update(visible=False, elem_classes=[]),
+        map_prompt_md: "",
+        map_prompt_radio: gr.update(choices=[], value=None),
+        skip_btn: gr.update(interactive=pending_accept is None),
+        reject_btn: gr.update(interactive=pending_accept is None),
+        accept_btn: gr.update(interactive=pending_accept is None),
+        known_series_box: known_series_value,
+        oc_box: oc_value,
+        dup_group: dup_group_update,
+        dup_md: dup_text,
+        dup_thumb_img: dup_thumb,
+        wallpaper_hint_md: _wallpaper_hint(entry, suggested),
+        dup_action_btn: dup_action,
+        char_alias_group: gr.update(
             visible=_alias_stage_open(),
             elem_classes=["confirm-panel"] if _alias_stage_open() else [],
         ),
-        _character_alias_prompt_md(pending_accept),
-        gr.update(
+        char_alias_md: _character_alias_prompt_md(pending_accept),
+        char_alias_dropdown: gr.update(
             choices=(pending_accept or {}).get("alias_choices", []) or [],
             value=None,
         ),
-    )
+    }
 
 
 def on_skip():
@@ -684,19 +709,18 @@ def _character_alias_panel(characters, franchise, crossover, same_series_group,
     stale pre-edit entry underneath an open confirm panel.
 
     `status` is threaded through rather than left to the caller because
-    _render_current bakes it into the header (slot 0), which this then copies --
-    a caller that renders the panel and sets the header itself would have to
-    know that layout.
+    _render_current bakes it into the header, which this then keeps -- a caller
+    that renders the panel and sets the header itself would have to know that.
     """
-    base = list(_render_current(status))
-    base[5] = "\n".join(characters)
-    base[6] = "\n".join(franchise)
-    base[7] = crossover
-    base[8] = same_series_group
-    base[9] = wallpaper
-    base[17] = known_series
-    base[18] = is_oc
-    return tuple(base)
+    render = _render_current(status)
+    render[character_box] = "\n".join(characters)
+    render[franchise_box] = "\n".join(franchise)
+    render[crossover_box] = crossover
+    render[same_series_group_box] = same_series_group
+    render[wallpaper_box] = wallpaper
+    render[known_series_box] = known_series
+    render[oc_box] = is_oc
+    return render
 
 
 def _finalize_accept(entry, parsed, map_write, post_id, index, layout_snapshot=None):
@@ -867,18 +891,18 @@ def on_accept(character_text, franchise_text, crossover_value, same_series_group
 
     # Keep the textboxes showing what the user just typed (not the stale
     # pre-edit entry values _render_current() would otherwise re-render).
-    base = list(_render_current())
-    base[5] = "\n".join(new_characters)
-    base[6] = "\n".join(new_franchise)
-    base[7] = new_crossover
-    base[8] = new_same_series_group
-    base[9] = new_wallpaper
-    base[11] = gr.update(visible=True, elem_classes=["confirm-panel"])
-    base[12] = f"r/{subreddit} isn't mapped yet. Remember this for future posts?"
-    base[13] = gr.update(choices=choices, value="once")
-    base[17] = new_known_series
-    base[18] = new_oc
-    return tuple(base)
+    render = _render_current()
+    render[character_box] = "\n".join(new_characters)
+    render[franchise_box] = "\n".join(new_franchise)
+    render[crossover_box] = new_crossover
+    render[same_series_group_box] = new_same_series_group
+    render[wallpaper_box] = new_wallpaper
+    render[map_prompt_group] = gr.update(visible=True, elem_classes=["confirm-panel"])
+    render[map_prompt_md] = f"r/{subreddit} isn't mapped yet. Remember this for future posts?"
+    render[map_prompt_radio] = gr.update(choices=choices, value="once")
+    render[known_series_box] = new_known_series
+    render[oc_box] = new_oc
+    return render
 
 
 def on_map_prompt_confirm(choice):
@@ -1022,7 +1046,187 @@ def on_undo():
     return _render_current()
 
 
+# ---------------------------------------------------------------------------
+# Settings tab: subreddit_map.json editor
+#
+# Scope is deliberately this one file. layout.json's aliases, series_aliases.json
+# and the shortname file each have different write semantics (per-franchise
+# scoping, alias-chain resolution, a line-oriented text format) and are not
+# editable here.
+#
+# Nothing is cached. tagger._load_subreddit_map re-reads from disk on every
+# lookup, so an edit made here applies to the next tagged post with no
+# invalidation step -- and these handlers likewise re-read before every render,
+# so the form can never show a stale file.
+# ---------------------------------------------------------------------------
+
+# Keys the form owns. Anything else on an entry (`_note`) is shown read-only and
+# preserved by save_subreddit_map_entry's merge.
+_SETTINGS_FORM_KEYS = ("franchise", "character")
+
+
+def _settings_raw():
+    """The file as-is, including `_comment`. Returns {} when it doesn't exist --
+    read_subreddit_map raises rather than exiting, which matters here because
+    these run inside the server process and sys.exit would take down every tab.
+
+    A malformed file is deliberately NOT caught: Gradio surfaces the exception
+    without killing the server, whereas swallowing it would show an empty
+    editor over a file that still has 167 entries in it."""
+    try:
+        return read_subreddit_map()
+    except FileNotFoundError:
+        return {}
+
+
+def _settings_keys(raw=None):
+    """Entry keys only. `_comment` is file-level documentation, not a subreddit,
+    so it is never offered for editing -- but it is never dropped either; every
+    write round-trips the raw file."""
+    raw = _settings_raw() if raw is None else raw
+    return sorted(k for k in raw if not k.startswith("_"))
+
+
+def _settings_extras_md(entry):
+    """Read-only view of the keys the form doesn't own. Shown because they are
+    invisible otherwise and a save that silently dropped them is exactly the bug
+    this tab had to fix first."""
+    if not isinstance(entry, dict):
+        return ""
+    extras = {k: v for k, v in entry.items() if k not in _SETTINGS_FORM_KEYS}
+    if not extras:
+        return ""
+    lines = ["**Other keys on this entry** — kept as-is when you save:", ""]
+    for key, value in extras.items():
+        lines.append(f"- `{key}`: {value}")
+    return "\n".join(lines)
+
+
+def _settings_render(selected=None, status="", key_text=None):
+    """Full repaint of the Settings form as {component: value}.
+
+    Same discipline as _render_current: every Settings component is present on
+    every branch, addressed by component object rather than position, so adding
+    a control here can't silently shift an index."""
+    raw = _settings_raw()
+    keys = _settings_keys(raw)
+    entry = raw.get(selected) if selected else None
+    if not isinstance(entry, dict):
+        entry = None
+
+    franchise = entry.get("franchise") if entry else None
+    # None is a real, meaningful value here (parse the franchise from the
+    # title), so it drives the checkbox rather than emptying the textbox.
+    is_null = entry is not None and "franchise" in entry and franchise is None
+    return {
+        settings_dropdown: gr.update(choices=keys, value=selected),
+        settings_key_box: key_text if key_text is not None else (selected or ""),
+        settings_franchise_box: gr.update(
+            value="" if franchise is None else str(franchise),
+            interactive=not is_null,
+        ),
+        settings_null_box: is_null,
+        settings_character_box: (entry or {}).get("character") or "",
+        settings_extras_md: _settings_extras_md(entry),
+        settings_status_md: status,
+        settings_count_md: f"**{len(keys)}** subreddit entries.",
+    }
+
+
+def on_settings_select(selected):
+    return _settings_render(selected=selected)
+
+
+def on_settings_add():
+    return _settings_render(
+        selected=None, key_text="",
+        status="Type a subreddit key, set its franchise, then Save. "
+               "New entries are appended to the end of the file.",
+    )
+
+
+def on_settings_null_toggle(is_null):
+    """A null franchise and an empty one are different things in this file, so
+    the control that chooses between them also greys out the textbox -- an
+    editable box whose contents are about to be ignored is a trap."""
+    return gr.update(interactive=not is_null)
+
+
+def on_settings_save(key_text, franchise_text, is_null, character_text, selected):
+    key = normalize_subreddit(key_text or "")
+    if not key:
+        return _settings_render(selected=selected, key_text=key_text,
+                                status="⚠️ Subreddit key is empty — nothing saved.")
+
+    franchise_text = (franchise_text or "").strip()
+    if is_null:
+        franchise = None
+    elif not franchise_text:
+        # Refusing beats guessing: "" and null mean different things and only
+        # the user knows which one was meant.
+        return _settings_render(
+            selected=selected, key_text=key_text,
+            status="⚠️ Franchise is empty — nothing saved. Type a franchise, or "
+                   "tick **No franchise** to write `null` (franchise parsed from the title).",
+        )
+    else:
+        franchise = franchise_text
+    character = (character_text or "").strip() or None
+
+    raw_before = _settings_raw()
+    renamed_from = selected if selected and selected != key else None
+    existed = key in raw_before
+
+    if renamed_from:
+        remove_subreddit_map_entry(renamed_from)
+    save_subreddit_map_entry(key, franchise, character)
+
+    raw_after = _settings_raw()
+    kept = [k for k in (raw_after.get(key) or {}) if k not in _SETTINGS_FORM_KEYS]
+
+    shown_franchise = "`null` (parsed from title)" if franchise is None else f"“{franchise}”"
+    if renamed_from:
+        action = (f"Renamed **{renamed_from}** → **{key}**. Note: a rename is a "
+                  f"remove + re-add, so **{key}** now sits at the END of the file "
+                  f"rather than in its old position.")
+    elif existed:
+        action = f"Updated **{key}**."
+    else:
+        action = f"Added **{key}** at the end of the file."
+
+    detail = f"franchise = {shown_franchise}"
+    detail += f", character = “{character}”" if character else ", no character"
+    if kept:
+        detail += f". Preserved: {', '.join('`' + k + '`' for k in kept)}"
+
+    return _settings_render(
+        selected=key, status=f"✅ {action} {detail}.",
+    )
+
+
+def on_settings_delete(selected):
+    if not selected:
+        return _settings_render(selected=None,
+                                status="⚠️ Nothing selected — nothing deleted.")
+    raw = _settings_raw()
+    if selected not in raw:
+        return _settings_render(selected=None,
+                                status=f"⚠️ **{selected}** isn't in the file — nothing deleted.")
+    remove_subreddit_map_entry(selected)
+    return _settings_render(
+        selected=None, key_text="",
+        status=f"🗑️ Deleted **{selected}**.",
+    )
+
+
 with gr.Blocks(title="Oshiire review") as demo:
+  with gr.Tabs():
+   # Indentation inside the tabs is deliberately shallow (1 space per level):
+   # wrapping the existing panel in a Tab must not reflow every line of it,
+   # because the diff of a re-indented block hides whether anything else moved.
+   # The component order below, the `outputs` list and all nine event wirings
+   # are unchanged -- only the nesting is new.
+   with gr.Tab("Review"):
     header_md = gr.Markdown()
 
     with gr.Group() as review_group:
@@ -1133,6 +1337,101 @@ with gr.Blocks(title="Oshiire review") as demo:
     char_alias_skip_btn.click(fn=on_character_alias_skip, outputs=outputs)
     dup_action_btn.click(fn=on_reject_duplicate, outputs=outputs)
     undo_btn.click(fn=on_undo, outputs=outputs)
+
+   with gr.Tab("Settings") as settings_tab:
+    gr.Markdown(
+        "### subreddit_map.json\n"
+        "The lookup that turns a subreddit into a franchise (and, for "
+        "character-specific subs, a character). Edits apply to the next tagged "
+        "post immediately — nothing caches this file."
+    )
+    settings_count_md = gr.Markdown()
+    # Choices are set HERE as well as by the load event, and allow_custom_value
+    # is on, because Dropdown.preprocess validates the submitted value against
+    # the SERVER-side component's choices -- and gr.update(choices=...) only
+    # repaints the client. Built with choices=[], every selection came back
+    # "Value: asuka is not in the list of choices: []". Seeding them covers the
+    # entries that exist at launch; allow_custom_value covers the ones added
+    # through this tab afterwards, which the server object still won't know
+    # about. (Same reason char_alias_dropdown sets it.)
+    settings_dropdown = gr.Dropdown(
+        choices=_settings_keys(), value=None, label="Subreddit", filterable=True,
+        allow_custom_value=True,
+        info="Type to filter.",
+    )
+    settings_key_box = gr.Textbox(
+        label="Subreddit key", max_lines=1,
+        info="Lowercased on save. Changing this renames the entry.",
+    )
+    settings_franchise_box = gr.Textbox(
+        label="Franchise", max_lines=1,
+        info="The source work this sub is about.",
+    )
+    # A null franchise is a SHAPE, not a missing value: it marks a sub whose
+    # franchise comes from the title. Seven entries rely on it, so the UI has
+    # to let the user say "null" distinctly from "empty".
+    settings_null_box = gr.Checkbox(
+        label="No franchise — parse it from the post title (writes null)",
+    )
+    settings_character_box = gr.Textbox(
+        label="Character", max_lines=1,
+        info="Only for character-specific subs. Leave empty to clear it.",
+    )
+    settings_extras_md = gr.Markdown()
+    with gr.Row():
+        settings_save_btn = gr.Button("Save", variant="primary")
+        settings_delete_btn = gr.Button("Delete", variant="stop")
+        settings_add_btn = gr.Button("Add new")
+    settings_status_md = gr.Markdown()
+
+    # Registration list for the Settings form, mirroring `outputs` above. The
+    # handlers return {component: value} dicts, so this list only declares
+    # which components a Settings event may repaint -- never an order the
+    # handlers have to match.
+    settings_outputs = [
+        settings_dropdown,
+        settings_key_box,
+        settings_franchise_box,
+        settings_null_box,
+        settings_character_box,
+        settings_extras_md,
+        settings_status_md,
+        settings_count_md,
+    ]
+
+    # Populated when the tab is OPENED, not by a second demo.load at startup.
+    # The panel reads subreddit_map.json, and that file changes underneath it:
+    # the Review tab's own subreddit-map confirm panel writes to it. A
+    # once-at-launch population would show a stale map for the rest of the
+    # session, so refreshing on open is the correct trigger independently of
+    # any startup-timing concern. It also keeps the panel off the startup path
+    # entirely -- opening the tab is always what fills it in.
+    #
+    # No `inputs`: gradio injects SelectData only into a parameter type-hinted
+    # for it, and _settings_render has no hints, so this calls it with no
+    # arguments.
+    settings_tab.select(fn=_settings_render, outputs=settings_outputs)
+    # .input(), not .change(): .change() also fires when a handler sets the
+    # value programmatically, so every Save -- which re-selects the saved key --
+    # would immediately re-render with an empty status and swallow its own
+    # confirmation message.
+    settings_dropdown.input(
+        fn=on_settings_select, inputs=[settings_dropdown], outputs=settings_outputs
+    )
+    settings_null_box.input(
+        fn=on_settings_null_toggle, inputs=[settings_null_box],
+        outputs=[settings_franchise_box],
+    )
+    settings_save_btn.click(
+        fn=on_settings_save,
+        inputs=[settings_key_box, settings_franchise_box, settings_null_box,
+                settings_character_box, settings_dropdown],
+        outputs=settings_outputs,
+    )
+    settings_delete_btn.click(
+        fn=on_settings_delete, inputs=[settings_dropdown], outputs=settings_outputs
+    )
+    settings_add_btn.click(fn=on_settings_add, outputs=settings_outputs)
 
 
 if __name__ == "__main__":

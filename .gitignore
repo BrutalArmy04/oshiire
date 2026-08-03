@@ -127,3 +127,12 @@ data/backfill/*
 # Internal working notes: open work, settled decisions, release TODOs. Not part
 # of the public release -- CLAUDE.md and docs/SETUP.md are what ship.
 docs/PROJECT_CONTEXT.md
+
+# Scratch scripts stay local, but one-off data MIGRATIONS are committed: they
+# rename and move files inside ARCHIVE_DIR, which is not itself in version
+# control, so the script is the only record of what was changed and the only
+# way to reason about it afterwards. `scripts/*` rather than `scripts/` because
+# git will not descend into an excluded directory -- the negation below can
+# only re-include migrations/ if the parent itself is not excluded.
+scripts/*
+!scripts/migrations/

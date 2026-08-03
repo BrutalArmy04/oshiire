@@ -90,6 +90,35 @@ def save_series_alias(variant: str, canonical: str, path: Path = SERIES_ALIASES_
     return aliases
 
 
+def remove_series_alias(variant: str, path: Path = SERIES_ALIASES_PATH) -> dict:
+    """Deletes the alias for `variant` and returns the updated map. The
+    counterpart to save_series_alias, for retracting an alias recorded by
+    mistake -- answering the review UI's "remember this?" prompt with the wrong
+    target silently re-points every future tag of that name, and until now
+    nothing but hand-editing the file could take it back.
+
+    The key is matched through _normalize_series_name -- the same rule
+    canonicalize_series uses to FIND an alias -- so a variant is removed by the
+    name that resolves it, not by the exact casing it happens to be stored
+    under. Anything canonicalize_series would honour, this can retract; a
+    caller reading a name off a UI label can never miss the key it can see.
+
+    A variant that isn't there is a clean no-op: the file is not rewritten at
+    all, so removing an already-absent alias can't touch its mtime or reorder
+    anything. Removes every key that normalizes to `variant`, not just the
+    first -- a file hand-edited to hold two casings of one name would otherwise
+    keep resolving through the survivor."""
+    aliases = load_series_aliases(path)
+    target = _normalize_series_name(variant)
+    doomed = [key for key in aliases if _normalize_series_name(key) == target]
+    if not doomed:
+        return aliases
+    for key in doomed:
+        del aliases[key]
+    save_series_aliases(aliases, path)
+    return aliases
+
+
 def save_character_alias(folder_name: str, variant: str, canonical: str,
                          layout: dict, path: Path = LAYOUT_PATH) -> dict:
     """Records a per-franchise character alias (variant -> canonical folder) and

@@ -48,16 +48,46 @@ X_SEPARATOR_TOKENS = {"x", "×"}
 DIVIDER_TOKENS = {"-", ":", "|", "—"}
 
 
-def _load_subreddit_map(path: Path = SUBREDDIT_MAP_PATH) -> dict:
+def read_subreddit_map(path: Path = SUBREDDIT_MAP_PATH) -> dict:
+    """Raw reader for EDITORS of the map (the review UI's Settings tab).
+
+    Three deliberate differences from _load_subreddit_map, which is the reader
+    for CONSUMERS of the map:
+      - raises FileNotFoundError instead of calling sys.exit. A Gradio event
+        handler runs inside the server process, so an exit there kills the UI
+        for every tab, not just the failing action.
+      - keeps underscore-prefixed keys (`_comment`), because an editor has to
+        write the whole file back and silently dropping them would delete
+        them.
+      - does not lowercase keys, so what is shown and what is written match
+        the file byte for byte.
+
+    Nothing here is cached: the file is re-read on every call, so an edit takes
+    effect for the next tagged post with no invalidation step.
+    """
     if not path.exists():
+        raise FileNotFoundError(
+            f"{path} not found. Copy subreddit_map.example.json to {path} "
+            "(and edit it to match your subs)."
+        )
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _load_subreddit_map(path: Path = SUBREDDIT_MAP_PATH) -> dict:
+    """Reader for CONSUMERS (ingest/tagger CLI). Exits on a missing file, drops
+    underscore-prefixed keys and lowercases the rest -- all three are relied on
+    by the callers below, so this behaviour is unchanged. Only the file read
+    itself is shared with read_subreddit_map."""
+    try:
+        data = read_subreddit_map(path)
+    except FileNotFoundError:
         print(
             f"{path} not found. Copy subreddit_map.example.json to {path} "
             "(and edit it to match your subs), then retry.",
             file=sys.stderr,
         )
         sys.exit(1)
-    with path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
     return {k.lower(): v for k, v in data.items() if not k.startswith("_")}
 
 
@@ -78,13 +108,33 @@ def _atomic_write_json(data: dict, path: Path) -> None:
 def save_subreddit_map_entry(subreddit: str, franchise: str, character: str = None,
                               path: Path = SUBREDDIT_MAP_PATH) -> None:
     """Adds/overwrites one subreddit_map.json entry, preserving every other
-    key/value/order in the file. Called from the review UI when the user
-    opts to remember a subreddit -> franchise/character mapping."""
+    key/value/order in the file. Called from the review UI when the user opts
+    to remember a subreddit -> franchise/character mapping, and from its
+    Settings tab.
+
+    MERGES onto an existing entry rather than replacing it. Rebuilding the
+    entry from scratch used to discard every key this function doesn't know
+    about -- and 8 entries carry a hand-written `_note` explaining why they are
+    shaped the way they are (one of them alongside a character). Saving any of
+    those from the UI destroyed the note silently, with nothing in the diff to
+    suggest the save had done more than it was asked to.
+
+    `franchise` of None is written as JSON null and is MEANINGFUL: it marks a
+    sub whose franchise comes from the title instead. It is not the same as an
+    absent or empty franchise, so it is written through as-is.
+
+    A falsy `character` removes the key, so clearing the field in the Settings
+    tab clears the mapping. Insertion order keeps franchise/character first;
+    unrecognized keys trail them exactly as they did in the file."""
     key = normalize_subreddit(subreddit)
     data = json.loads(path.read_text(encoding="utf-8"))
-    entry = {"franchise": franchise}
+    existing = data.get(key)
+    entry = dict(existing) if isinstance(existing, dict) else {}
+    entry["franchise"] = franchise
     if character:
         entry["character"] = character
+    else:
+        entry.pop("character", None)
     data[key] = entry
     _atomic_write_json(data, path)
 
