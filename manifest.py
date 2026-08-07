@@ -20,8 +20,49 @@ skip_reason and reason are distinct fields -- never interchangeable.
 import json
 import os
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 MANIFEST_PATH = Path("manifest.json")
+
+DISPLAY_REDDIT_HOST = "www.reddit.com"
+
+
+def display_permalink(url: str) -> str:
+    """Rewrite a reddit permalink's host to www.reddit.com, FOR DISPLAY ONLY.
+
+    Entries reach the manifest from two pipelines that spell the same URL
+    differently: ingest.py takes the RSS feed's `old.reddit.com` links, while
+    backfill.py builds `www.reddit.com` ones from the CSV export. Only the host
+    differs -- the path shape is identical -- so this normalizes what the review
+    and resolve screens render, and nothing else.
+
+    The stored value is deliberately left alone. ingest.retry_skipped_galleries
+    feeds `entry["permalink"]` straight to fetch_gallery_images, which parses
+    gallery-tile markup only old.reddit's HTML emits; a www URL there yields an
+    empty image list, which the caller reads as "confirmed non-gallery" and
+    settles into a non-retryable skip. That is silent data loss, and the host
+    check in fetch_gallery_images is only a stderr warning, so nothing would
+    surface it. The stored host is also provenance -- it says which pipeline
+    wrote the entry.
+
+    Only reddit.com and its subdomains are touched. redd.it image hosts
+    (i.redd.it, preview.redd.it) are a different domain and are left as-is, as
+    are non-reddit hosts, empty strings and anything unparseable.
+    """
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+    except ValueError:
+        return url
+    if not host:
+        return url
+    host = host.lower()
+    if host != "reddit.com" and not host.endswith(".reddit.com"):
+        return url
+    netloc = DISPLAY_REDDIT_HOST
+    if parts.port is not None:
+        netloc = f"{netloc}:{parts.port}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
 
 def load_manifest(path: Path = MANIFEST_PATH) -> dict:

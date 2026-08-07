@@ -20,7 +20,7 @@ import gradio as gr
 from starlette.exceptions import StarletteDeprecationWarning
 
 from archive import get_archive_dir, plan_moves
-from manifest import load_manifest, save_manifest
+from manifest import display_permalink, load_manifest, save_manifest
 from shortname import (
     franchise_folder_and_def,
     load_layout,
@@ -204,7 +204,9 @@ def _render_current(status=""):
     local_path = entry.get("local_path")
     image_path = str(Path(local_path).resolve()) if local_path else None
     title_md = f"### {entry.get('title', '')}"
-    permalink = entry.get("permalink", "")
+    # Display-only host normalization; the manifest keeps its own spelling
+    # (see manifest.display_permalink).
+    permalink = display_permalink(entry.get("permalink", ""))
     meta_md = (
         f"**Subreddit:** r/{entry.get('subreddit', '')}  \n"
         f"**Link:** [{permalink}]({permalink})  \n"

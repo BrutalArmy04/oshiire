@@ -37,9 +37,14 @@ def load_layout(path: Path = LAYOUT_PATH) -> dict:
 
 def save_layout(layout: dict, path: Path = LAYOUT_PATH) -> None:
     """Atomic write, preserving layout.json's hand-curated key order -- no
-    sort_keys, since the file is loaded, mutated in place, and re-dumped."""
+    sort_keys, since the file is loaded, mutated in place, and re-dumped.
+
+    `newline=""` so the "\\n" json.dump emits reaches disk as LF on every
+    platform. Text mode's default (newline=None) translates it to the OS
+    line ending, which makes the on-disk bytes depend on which machine
+    happened to write the file -- see .gitattributes."""
     tmp_path = path.with_suffix(path.suffix + ".tmp")
-    with tmp_path.open("w", encoding="utf-8") as f:
+    with tmp_path.open("w", encoding="utf-8", newline="") as f:
         json.dump(layout, f, indent=2, ensure_ascii=False)
     os.replace(tmp_path, path)
 
@@ -56,11 +61,28 @@ def load_series_aliases(path: Path = SERIES_ALIASES_PATH) -> dict:
 
 def save_series_aliases(aliases: dict, path: Path = SERIES_ALIASES_PATH) -> None:
     """Atomic write, same tmp+os.replace discipline as save_layout. Sorted,
-    since this file has no hand-curated order to preserve."""
+    since this file has no hand-curated order to preserve.
+
+    Load-mutate-redump, same as save_layout: the existing file is read as RAW
+    JSON and only its "aliases" key is replaced, so any top-level sibling
+    survives the write. Reading it back via load_series_aliases would NOT do --
+    that strips the envelope down to .get("aliases") and the siblings with it.
+    The example file already carries a top-level "_comment", and the Settings
+    alias panel writes through here, so the envelope has to be preserved rather
+    than rebuilt.
+
+    `newline=""` for the same reason as save_layout: LF on disk everywhere."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    data = {}
+    if path.exists():
+        with path.open("r", encoding="utf-8") as f:
+            loaded = json.load(f)
+        if isinstance(loaded, dict):
+            data = loaded
+    data["aliases"] = aliases
     tmp_path = path.with_suffix(path.suffix + ".tmp")
-    with tmp_path.open("w", encoding="utf-8") as f:
-        json.dump({"aliases": aliases}, f, indent=2, ensure_ascii=False, sort_keys=True)
+    with tmp_path.open("w", encoding="utf-8", newline="") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False, sort_keys=True)
     os.replace(tmp_path, path)
 
 
@@ -141,6 +163,201 @@ def save_character_alias(folder_name: str, variant: str, canonical: str,
     table[variant.strip()] = resolved
     save_layout(layout, path)
     return layout
+
+
+def remove_character_alias(folder_name: str, variant: str, layout: dict,
+                           path: Path = LAYOUT_PATH) -> dict:
+    """Deletes the character alias for `variant` under `folder_name` and returns
+    the updated layout. The counterpart to save_character_alias, and the
+    character-level twin of remove_series_alias -- an alias answered with the
+    wrong target at the review UI's prompt silently re-points every future tag
+    of that name into the wrong character folder, and until now nothing but
+    hand-editing layout.json could take it back.
+
+    The key is matched through _lookup_character -- the SAME normalizer
+    character matching uses, NOT lookup_ci's series rule -- so an alias is
+    removed by any spelling that would resolve it ("hutao" retracts a "Hu Tao"
+    key). Anything resolve_character would honour, this can retract; a caller
+    reading a name off a UI label can never miss the key it can see.
+
+    An absent franchise or key is a clean no-op: the file is not rewritten at
+    all, so removing an already-absent alias can't touch layout.json's mtime or
+    reorder its hand-curated keys. Removes every key that normalizes to
+    `variant`, not just the first -- a hand-edited file holding two spellings of
+    one name would otherwise keep resolving through the survivor. An emptied
+    franchise dict (and then an emptied character_aliases table) is pruned, so
+    retracting the only alias leaves layout.json as it was before it was
+    recorded."""
+    table = (layout or {}).get("character_aliases")
+    franchise_table = (table or {}).get(folder_name)
+    if not franchise_table:
+        return layout
+    target = normalize_name_key(variant)
+    doomed = [key for key in franchise_table if normalize_name_key(key) == target] if target else []
+    if not doomed:
+        return layout
+    for key in doomed:
+        del franchise_table[key]
+    if not franchise_table:
+        del table[folder_name]
+        if not table:
+            layout.pop("character_aliases", None)
+    save_layout(layout, path)
+    return layout
+
+
+# ---------------------------------------------------------------------------
+# Persistent answers to the review UI's character-alias prompt.
+#
+# Declining that prompt used to write nothing at all, so the same unmatched name
+# was re-offered on every image that carried it, forever. These two tables are
+# the durable answers: "this name always files to the group folder" and "stop
+# asking about this name."
+#
+# They are TOP-LEVEL keys, deliberately not folded into `character_aliases`.
+# That table is a variant -> canonical identity map -- every value in it is a
+# real folder name, and resolve_character interpolates it straight into a path.
+# A sentinel or a null value there would either build a literal bogus directory
+# or force every reader to special-case it; the Settings panels read it as a
+# plain identity map too. Both keys below are OPTIONAL: a layout.json with
+# neither behaves exactly as it did before they existed, so there is no
+# migration.
+#
+# Shape of both: {folder_name: [character_name, ...]}, keyed by the franchise
+# FOLDER name for the same reason character_aliases is -- two franchises can
+# have different characters sharing one short name.
+# ---------------------------------------------------------------------------
+
+CHARACTER_GROUP_ROUTE_KEY = "character_group_route"
+CHARACTER_ALIAS_DISMISSED_KEY = "character_alias_dismissed"
+
+
+def _stored_name_match(stored_names, character_name: str) -> Optional[str]:
+    """The stored spelling in `stored_names` that `character_name` resolves to,
+    or None.
+
+    Matching is resolve_character's exact rule: normalize_name_key (casefold,
+    drop every non-alphanumeric) with a second pass over reversed_name_variant
+    for a two-token name. That equivalence has to hold, because the name asked
+    about here is the name the prompt showed, and the name asked about LATER is
+    whatever spelling the next post happens to carry -- if the two didn't
+    compare the same way, an answered prompt would come back under a variant
+    spelling. Reversing only the query is enough: the swap is symmetric, so a
+    stored "Shinobu Kuki" is found by querying "Kuki Shinobu" and vice versa.
+
+    Returning the stored spelling rather than a bool is what lets the remove_*
+    functions retract by any spelling that would have matched -- anything
+    settable is retractable.
+    """
+    if not stored_names or not character_name:
+        return None
+    for candidate in (character_name, reversed_name_variant(character_name)):
+        if not candidate:
+            continue
+        target = normalize_name_key(candidate)
+        if not target:
+            continue
+        for stored in stored_names:
+            if normalize_name_key(stored) == target:
+                return stored
+    return None
+
+
+def _character_name_list(layout: dict, key: str, folder_name: str) -> list:
+    """The stored name list for one franchise folder, or [] when either the
+    table or the folder is absent. Both keys are optional, so every read has to
+    tolerate them missing entirely."""
+    return ((layout or {}).get(key) or {}).get(folder_name) or []
+
+
+def _add_character_name(layout: dict, key: str, folder_name: str, name: str,
+                        path: Path) -> dict:
+    """Append `name` to layout[key][folder_name] and persist. A name already
+    present (by _stored_name_match, so a spacing/casing/order variant counts) is
+    a clean no-op: nothing is appended and the file is not rewritten at all, so
+    re-answering the same prompt can't grow a list of near-duplicates or churn
+    layout.json's mtime."""
+    existing = _character_name_list(layout, key, folder_name)
+    if _stored_name_match(existing, name) is not None:
+        return layout
+    layout.setdefault(key, {}).setdefault(folder_name, []).append(name.strip())
+    save_layout(layout, path)
+    return layout
+
+
+def _remove_character_name(layout: dict, key: str, folder_name: str, name: str,
+                           path: Path) -> dict:
+    """Drop every stored name that `name` matches, and persist.
+
+    Removes ALL matches rather than the first, on the same reasoning as
+    remove_series_alias: a hand-edited file holding two spellings of one name
+    would otherwise keep answering through the survivor. An emptied folder entry
+    (and then an emptied table) is pruned, so retracting the only answer leaves
+    layout.json byte-identical to before it was given. A name that isn't there
+    is a no-op that doesn't rewrite the file."""
+    table = (layout or {}).get(key)
+    names = (table or {}).get(folder_name)
+    if not names:
+        return layout
+    survivors = [stored for stored in names if _stored_name_match([stored], name) is None]
+    if len(survivors) == len(names):
+        return layout
+    if survivors:
+        table[folder_name] = survivors
+    else:
+        del table[folder_name]
+        if not table:
+            layout.pop(key, None)
+    save_layout(layout, path)
+    return layout
+
+
+def save_character_group_route(folder_name: str, name: str, layout: dict,
+                               path: Path = LAYOUT_PATH) -> dict:
+    """Record "always file `name` to this franchise's group subfolder" and
+    return the updated layout. Read by archive.py's nested routing, which
+    honours it ahead of a roster match, and by the review UI, which stops
+    prompting about the name."""
+    return _add_character_name(layout, CHARACTER_GROUP_ROUTE_KEY, folder_name, name, path)
+
+
+def remove_character_group_route(folder_name: str, name: str, layout: dict,
+                                 path: Path = LAYOUT_PATH) -> dict:
+    """Retract a group route recorded by save_character_group_route."""
+    return _remove_character_name(layout, CHARACTER_GROUP_ROUTE_KEY, folder_name, name, path)
+
+
+def save_character_alias_dismissal(folder_name: str, name: str, layout: dict,
+                                   path: Path = LAYOUT_PATH) -> dict:
+    """Record "stop prompting about `name` for this franchise" and return the
+    updated layout. Review-side ONLY -- this has no routing effect whatsoever.
+    An unresolved character on a nested franchise without `"fallback": "root"`
+    still flags needs_folder at archive time, which is intended: the reviewer
+    said they didn't want to be asked, not that they'd decided where it goes."""
+    return _add_character_name(layout, CHARACTER_ALIAS_DISMISSED_KEY, folder_name, name, path)
+
+
+def remove_character_alias_dismissal(folder_name: str, name: str, layout: dict,
+                                     path: Path = LAYOUT_PATH) -> dict:
+    """Retract a dismissal recorded by save_character_alias_dismissal, so the
+    review UI asks about the name again."""
+    return _remove_character_name(layout, CHARACTER_ALIAS_DISMISSED_KEY, folder_name, name, path)
+
+
+def is_group_routed(folder_name: str, character_name: str, layout: dict) -> bool:
+    """Whether `character_name` is pinned to this franchise's group subfolder."""
+    return _stored_name_match(
+        _character_name_list(layout, CHARACTER_GROUP_ROUTE_KEY, folder_name),
+        character_name,
+    ) is not None
+
+
+def is_alias_dismissed(folder_name: str, character_name: str, layout: dict) -> bool:
+    """Whether the review UI has been told to stop asking about this name."""
+    return _stored_name_match(
+        _character_name_list(layout, CHARACTER_ALIAS_DISMISSED_KEY, folder_name),
+        character_name,
+    ) is not None
 
 
 def resolve_franchise(tag_name: str, layout: dict, series_aliases: Optional[dict] = None):
@@ -478,16 +695,63 @@ def save_shortname_entry(shortname_path: Path, code: str, full_name: str) -> Non
         lines.append(new_line)
 
     tmp_path = shortname_path.with_suffix(shortname_path.suffix + ".tmp")
-    tmp_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    tmp_path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="")
+    os.replace(tmp_path, shortname_path)
+
+
+def remove_shortname_entry(shortname_path: Path, full_name: str) -> None:
+    """Deletes the shortname-file line(s) for `full_name`. The counterpart to
+    save_shortname_entry, for retracting a code proposed and confirmed for the
+    wrong series -- the code is what gets suffixed onto every filename filed
+    under Others/Known Series, so a wrong one is not cosmetic.
+
+    Line-based like save_shortname_entry, and for the same reason: comments,
+    blank lines and every other entry survive byte for byte. Round-tripping
+    through load_shortname_map's (code, full_name) list would discard exactly
+    that formatting -- the file is hand-maintained.
+
+    Matched on _normalize_series_name(full_name), the same rule
+    save_shortname_entry uses to decide it is UPDATING a row rather than
+    appending one, so anything that would have been overwritten in place can be
+    removed. Removes every matching line, not just the first, since a
+    hand-edited file can hold two spellings of one series under two codes.
+
+    A `full_name` that isn't there (or a file that doesn't exist) is a clean
+    no-op: the file is not rewritten at all, so its mtime and byte layout are
+    untouched. Atomic tmp+os.replace, same as the writer."""
+    target = _normalize_series_name(full_name)
+    if not target or not shortname_path.exists():
+        return
+    lines = shortname_path.read_text(encoding="utf-8").splitlines()
+
+    survivors = []
+    removed = False
+    for line in lines:
+        parsed = _parse_shortname_line(line)
+        if parsed is not None and _normalize_series_name(parsed[1]) == target:
+            removed = True
+            continue
+        survivors.append(line)
+
+    if not removed:
+        return
+
+    tmp_path = shortname_path.with_suffix(shortname_path.suffix + ".tmp")
+    tmp_path.write_text("\n".join(survivors) + "\n", encoding="utf-8", newline="")
     os.replace(tmp_path, shortname_path)
 
 
 def undo_shortname_write(path: Path, existed_before: bool, snapshot: Optional[str]) -> None:
     """Reverts a save_shortname_entry call: restores the pre-save file text if
-    it existed, else deletes the file that save_shortname_entry created."""
+    it existed, else deletes the file that save_shortname_entry created.
+
+    `newline=""` so an undo restores the snapshot's own bytes rather than
+    re-translating its "\\n"s into the platform's line ending -- otherwise an
+    undo on Windows would reintroduce the CRLF the writer just stopped
+    producing."""
     if existed_before:
         tmp_path = path.with_suffix(path.suffix + ".tmp")
-        tmp_path.write_text(snapshot, encoding="utf-8")
+        tmp_path.write_text(snapshot, encoding="utf-8", newline="")
         os.replace(tmp_path, path)
     elif path.exists():
         path.unlink()

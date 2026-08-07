@@ -197,6 +197,25 @@ What each style means:
   folder name), e.g. `"Azure Lane": "Azur Lane"`. Leave it empty (as above)
   when your tag names already match your folder names.
 
+Sometimes the answer to "which folder does this name belong in?" is *neither* —
+so that prompt has two more buttons, and both write to `layout.json` too:
+
+- **`character_group_route`** — "Always file to Others_Group". A per-franchise
+  list of names that skip the roster entirely and file into the group
+  subfolder, for a tag that is really a pairing or a crowd rather than one
+  character. It beats a same-named subfolder, so it is a decision, not a
+  fallback.
+- **`character_alias_dismissed`** — "Stop asking about this name". Silences
+  the prompt for that name and does nothing else. The image is **not** routed
+  by this: an unmatched name still gets flagged at archive time unless the
+  franchise sets `"fallback": "root"`. Use it for a cameo or a mistagged
+  string you don't want a folder for and don't want to be asked about again.
+
+Both keys are optional — omit them entirely and nothing changes. Both are
+matched by the same lenient name rule as `character_aliases`, so an answer
+given for `Hu Tao` still holds when the next post tags it `hutao`, and Undo
+reverts the write along with the accept that made it.
+
 ## Your first run
 
 **The key thing to know going in: `ARCHIVE_DIR` does not need to be an

@@ -29,10 +29,9 @@ What these pin down, in the order the bugs would bite:
      flatten it to a bare mapping and break load_series_aliases for every
      caller.
 
-KNOWN LIMITATION, not asserted here because it is not this function's doing:
-save_series_aliases rewrites the file as {"aliases": ...} alone, so a hand-added
-top-level "_comment" (which the example file carries, and which
-subreddit_map.json supports) is dropped by ANY alias write, save or remove.
+save_series_aliases itself is covered separately at the bottom of this file:
+it used to rewrite the file as {"aliases": ...} alone, destroying any top-level
+sibling key on every write. See SaveSeriesAliasesEnvelopeTest.
 
     python -m unittest discover -s tests
     python tests/test_series_aliases.py
@@ -52,6 +51,7 @@ from shortname import (  # noqa: E402
     load_series_aliases,
     remove_series_alias,
     save_series_alias,
+    save_series_aliases,
 )
 
 EXAMPLE_ALIASES = REPO / "data" / "series_aliases.example.json"
@@ -167,14 +167,15 @@ class RemoveSeriesAliasTest(unittest.TestCase):
         remove_series_alias("SFC", self.path)
 
         envelope = self._envelope()
-        self.assertEqual(list(envelope), ["aliases"],
-                         'the file must stay {"aliases": {...}}, not a bare mapping')
+        self.assertIn("aliases", envelope,
+                      'the file must stay {"aliases": {...}}, not a bare mapping')
         self.assertIsInstance(envelope["aliases"], dict)
 
     def test_round_trips_with_save_series_alias(self):
         """The two are counterparts: save then remove returns to the start.
         Compared after a first normalizing write, since save_series_aliases
-        drops the example file's _comment (see the module docstring)."""
+        re-dumps sorted with indent=2 and the example file's own formatting
+        need not already match that."""
         save_series_alias("Settling Write", "Starfall Chronicle", self.path)
         settled_raw = self._raw()
         settled = load_series_aliases(self.path)
@@ -201,6 +202,119 @@ class RemoveSeriesAliasTest(unittest.TestCase):
         self.assertNotIn("hollow harbour", after)
         self.assertNotIn("Hollow Harbour", after)
         self.assertEqual(canonicalize_series("Hollow Harbour", after), "Hollow Harbour")
+
+
+class SaveSeriesAliasesEnvelopeTest(unittest.TestCase):
+    """save_series_aliases must preserve top-level sibling keys.
+
+    It used to write `{"aliases": aliases}` fresh, so anything else at the top
+    level -- the `_comment` block the example file carries, and anything a
+    future reader adds -- was destroyed by the next alias write. Latent rather
+    than active: the real data/series_aliases.json has no `_comment` today. The
+    point is to make the writer safe BEFORE the Settings alias panel starts
+    writing through it, since by then the loss would be silent and the file is
+    hand-editable.
+
+    The fix is save_layout's discipline: read the existing RAW json, mutate
+    only `aliases`, re-dump. Reading it back through load_series_aliases would
+    not do -- that strips the envelope to .get("aliases") and the siblings with
+    it, which is exactly the bug wearing a different hat.
+    """
+
+    COMMENT = ["Line one of a hand-written note.", "", "Line three."]
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="oshiire-envelope-"))
+        self.path = self.tmp / "series_aliases.json"
+        self.path.write_text(json.dumps({
+            "_comment": self.COMMENT,
+            "aliases": {"Starfall": "Starfall Chronicle"},
+        }, indent=2), encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _envelope(self):
+        return json.loads(self.path.read_text(encoding="utf-8"))
+
+    def test_save_series_alias_preserves_the_comment(self):
+        save_series_alias("SFC", "Starfall Chronicle", self.path)
+
+        envelope = self._envelope()
+        self.assertEqual(envelope["_comment"], self.COMMENT,
+                         "the hand-written _comment was destroyed by the write")
+        self.assertEqual(envelope["aliases"], {
+            "Starfall": "Starfall Chronicle", "SFC": "Starfall Chronicle"})
+
+    def test_save_series_aliases_preserves_the_comment(self):
+        """The lower-level writer, called directly -- the Settings panel will
+        use this form to write a whole edited map at once."""
+        save_series_aliases({"Only": "One Left"}, self.path)
+
+        envelope = self._envelope()
+        self.assertEqual(envelope["_comment"], self.COMMENT)
+        self.assertEqual(envelope["aliases"], {"Only": "One Left"})
+
+    def test_remove_series_alias_preserves_the_comment(self):
+        """remove writes through the same function, so it inherits the fix --
+        and would have inherited the bug."""
+        remove_series_alias("Starfall", self.path)
+
+        envelope = self._envelope()
+        self.assertEqual(envelope["_comment"], self.COMMENT)
+        self.assertEqual(envelope["aliases"], {})
+
+    def test_repeated_writes_do_not_erode_the_comment(self):
+        for i in range(3):
+            save_series_alias(f"Variant {i}", "Starfall Chronicle", self.path)
+
+        self.assertEqual(self._envelope()["_comment"], self.COMMENT)
+
+    def test_a_missing_file_is_created_with_just_the_aliases_key(self):
+        """No file to read means no envelope to preserve -- the default is {},
+        not a crash."""
+        fresh = self.tmp / "fresh.json"
+
+        save_series_alias("Starfall", "Starfall Chronicle", fresh)
+
+        self.assertEqual(json.loads(fresh.read_text(encoding="utf-8")),
+                         {"aliases": {"Starfall": "Starfall Chronicle"}})
+
+    def test_nested_directories_are_created(self):
+        """SERIES_ALIASES_PATH lives under data/, which may not exist yet."""
+        nested = self.tmp / "deeper" / "series_aliases.json"
+
+        save_series_alias("Starfall", "Starfall Chronicle", nested)
+
+        self.assertEqual(load_series_aliases(nested), {"Starfall": "Starfall Chronicle"})
+
+    def test_write_is_lf_only(self):
+        """newline="" on the tmp file, so the "\\n" json.dump emits is not
+        translated to the platform's line ending. Without it these bytes are
+        CRLF on Windows and LF on Linux -- which is why the real
+        data/series_aliases.json is CRLF on disk today."""
+        save_series_alias("SFC", "Starfall Chronicle", self.path)
+
+        raw = self.path.read_bytes()
+        self.assertNotIn(b"\r\n", raw)
+        self.assertIn(b"\n", raw, "indent=2 must still produce newlines")
+
+    def test_a_non_dict_top_level_does_not_crash_the_write(self):
+        """A hand-edited file can be malformed. Reading the raw envelope back
+        must not turn a bad one into a TypeError on write -- the map the caller
+        passed in still has to land.
+
+        Asserted against save_series_aliases directly. save_series_alias can't
+        reach here: it loads the current map first, and load_series_aliases has
+        always raised on a non-dict top level. That is unchanged and out of
+        scope -- a malformed file failing loudly on READ is fine; a write that
+        was handed the whole map failing is not."""
+        self.path.write_text(json.dumps(["not", "an", "envelope"]), encoding="utf-8")
+
+        save_series_aliases({"Starfall": "Starfall Chronicle"}, self.path)
+
+        self.assertEqual(self._envelope(),
+                         {"aliases": {"Starfall": "Starfall Chronicle"}})
 
 
 if __name__ == "__main__":

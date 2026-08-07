@@ -14,7 +14,7 @@ import gradio as gr
 from dotenv import load_dotenv
 from starlette.exceptions import StarletteDeprecationWarning
 
-from manifest import load_manifest, save_manifest
+from manifest import display_permalink, load_manifest, save_manifest
 from tagger import (
     normalize_subreddit,
     read_subreddit_map,
@@ -33,6 +33,8 @@ from imagemeta import (
 )
 from shortname import (
     franchise_folder_and_def,
+    is_alias_dismissed,
+    is_group_routed,
     load_layout,
     load_shortname_map,
     load_series_aliases,
@@ -40,6 +42,8 @@ from shortname import (
     match_shortname,
     resolve_character,
     save_character_alias,
+    save_character_alias_dismissal,
+    save_character_group_route,
     save_layout,
     propose_shortname_code,
     save_shortname_entry,
@@ -509,7 +513,9 @@ def _render_current(status=""):
     title_text = f"### {entry.get('title', '')}"
     local_path = entry.get("local_path")
     image_path = str(Path(local_path).resolve()) if local_path else None
-    permalink = entry.get("permalink", "")
+    # Display-only host normalization; the manifest keeps its own spelling
+    # (see manifest.display_permalink).
+    permalink = display_permalink(entry.get("permalink", ""))
     meta_text = (
         f"**Subreddit:** r/{entry.get('subreddit', '')}  \n"
         f"**Link:** [{permalink}]({permalink})  \n"
@@ -640,14 +646,16 @@ def _alias_stage_open():
 
 
 def _character_alias_candidate(franchise_list, character_list, crossover=False,
-                               known_series=False, is_oc=False):
+                               known_series=False, is_oc=False,
+                               same_series_group=False):
     """(folder, variant, choices) for a typed character name that resolves to no
     subfolder, or None when there is nothing to learn.
 
-    The exclusions below are about ROUTING PRECEDENCE and NAME OWNERSHIP, not
-    just franchise style. An alias is only worth learning when this character
-    name is the thing that picks the folder, and when the roster it would be
-    saved into is provably the one that name belongs to:
+    Two kinds of exclusion, and the difference between them is the thing to
+    hold onto -- they are NOT interchangeable, and reasoning that fits one does
+    not transfer to the other.
+
+    STRUCTURAL: this prompt cannot be asked safely or answered meaningfully.
 
     * EXACTLY ONE franchise. A multi-franchise entry gets no prompt at all,
       because nothing here can tell which franchise a given name belongs to.
@@ -657,22 +665,43 @@ def _character_alias_candidate(franchise_list, character_list, crossover=False,
       misroutes every future image using that name. Multi-franchise entries do
       reach this function (they fail `eligible` in on_accept and fall through
       the not-eligible branch), so this is a live path, not a theoretical one.
-    * NOT crossover. Precedence 1 sends the image to Crossover/ regardless of
-      franchise or character, so the name never reaches the path.
-    * NO archive_override. "File as Known Series" routes to
-      Others/Known Series/ (precedence 6) and OC routes to
-      Others/Artist's Original (precedence 7); in both the character name is
-      likewise unused.
     * NESTED style with a non-empty roster. For flat/shortname the name never
-      reaches the path either, and an alias has to point AT something.
+      reaches the path, and an alias has to point AT something.
+
+    DECIDED: the reviewer has already answered the routing question on this
+    screen, so asking a second time is noise. Each of these is a control the
+    reviewer set (or left set) before pressing Accept:
+
+    * Crossover -> Crossover/ (precedence 1).
+    * Original character -> Others/Artist's Original/ (precedence 7).
+    * File as Known Series -> Others/Known Series/ (precedence 6).
+    * Same-series group -> <Franchise>/Others_Group/ (precedence 4). This was
+      the one missing: an unmatched name on a group shot is EXPECTED, and
+      prompting anyway put a click on every group shot.
+
+    The DECIDED set is about the DECISION, not about where the image lands --
+    which is why `len(identities) >= 2` is deliberately NOT here even though it
+    reaches the very same group_dir return in archive.route_entry as the
+    same-series-group checkbox does. Nobody decided that: it is inferred from
+    the tags, and the tags are exactly what this prompt is for correcting. A
+    multi-name entry is where a name is MOST likely to be wrong, so it is the
+    last place to go quiet. Do not "finish the job" by excluding it for
+    symmetry with the checkbox -- the symmetry is in the destination only.
 
     Matching goes through shortname.resolve_character, the same call archive.py
     routes with, so this can never offer to teach an alias for a name that
     already resolves (spacing/order variants included).
+
+    A name the reviewer has already answered PERSISTENTLY is skipped too --
+    either pinned to the group folder or explicitly dismissed. Both answers are
+    stored per franchise folder in layout.json and matched by the same rule
+    resolve_character uses, so an answer given under one spelling still holds
+    when the next post tags the character differently. Without this the prompt
+    had no memory of being declined and re-offered the same name forever.
     """
     if not franchise_list or not character_list:
         return None
-    if len(franchise_list) != 1 or crossover or known_series or is_oc:
+    if len(franchise_list) != 1 or crossover or known_series or is_oc or same_series_group:
         return None
     folder, franchise_def = franchise_folder_and_def(franchise_list[0], layout, series_aliases)
     if not folder or not franchise_def:
@@ -683,20 +712,44 @@ def _character_alias_candidate(franchise_list, character_list, crossover=False,
     if not choices:
         return None
     for name in character_list:
+        if is_group_routed(folder, name, layout) or is_alias_dismissed(folder, name, layout):
+            continue
         if resolve_character(folder, franchise_def, name, layout) is None:
             return folder, name, choices
     return None
 
 
 def _character_alias_prompt_md(pending):
+    """The four answers, described by what each one actually does.
+
+    Two of them decide where the image files and two don't, and that split is
+    the thing the reviewer has to see: "stop asking" is a decision about the
+    PROMPT, not about routing, and reading it as "ignore this name" would be
+    read as "file it somewhere sensible" -- which nothing here does.
+    """
     if not pending or not pending.get("alias_variant"):
         return ""
+    name = pending["alias_variant"]
+    folder = pending["alias_folder"]
+    group = layout.get("group_subfolder", "Others_Group")
+    root_fallback = (layout.get("franchises", {}).get(folder) or {}).get("fallback") == "root"
+    unfiled = (
+        f"it still files into **{folder}** itself, because that franchise sets "
+        f"`\"fallback\": \"root\"`"
+        if root_fallback else
+        f"archive.py will still flag it as needing a folder in **{folder}**"
+    )
     return (
-        f"**“{pending['alias_variant']}”** doesn't match any character folder in "
-        f"**{pending['alias_folder']}**.\n\n"
-        f"Pick the folder it belongs to and save it, and every future image "
-        f"tagged “{pending['alias_variant']}” files itself. Not saving files this "
-        f"one image the same way but learns nothing."
+        f"**“{name}”** doesn't match any character folder in **{folder}**.\n\n"
+        f"**Save alternate name** — pick the folder below; this image and every "
+        f"future one tagged “{name}” files there.\n\n"
+        f"**Always file to {group}** — “{name}” goes to "
+        f"**{folder}/{group}** from now on, without naming a character folder.\n\n"
+        f"**Just file this image, don't save** — accepts this image and remembers "
+        f"nothing, so the next image tagged “{name}” asks again.\n\n"
+        f"**Stop asking about this name** — retires this prompt for “{name}” in "
+        f"**{folder}** and nothing more. It does *not* decide where the image "
+        f"files: {unfiled}."
     )
 
 
@@ -855,6 +908,7 @@ def on_accept(character_text, franchise_text, crossover_value, same_series_group
         alias = _character_alias_candidate(
             new_franchise, new_characters, crossover=new_crossover,
             known_series=new_known_series, is_oc=new_oc,
+            same_series_group=new_same_series_group,
         )
         if alias:
             pending_accept = {
@@ -927,6 +981,7 @@ def on_map_prompt_confirm(choice):
     alias = _character_alias_candidate(
         parsed["franchise"], parsed["characters"], crossover=parsed["crossover"],
         known_series=parsed["known_series"], is_oc=parsed["is_oc"],
+        same_series_group=parsed["same_series_group"],
     )
     if alias:
         pending_accept = {
@@ -991,8 +1046,43 @@ def on_character_alias_save(selected_character):
 
 
 def on_character_alias_skip():
-    """File this one image and learn nothing -- no layout.json write at all."""
+    """File this one image and learn nothing -- no layout.json write at all.
+    The name is offered again on the next image that carries it; the two
+    persistent answers below are how that stops."""
     return _commit_pending_accept()
+
+
+def _persistent_alias_answer(writer):
+    """Shared body of the two persistent answers to the alias prompt.
+
+    Both follow on_character_alias_save's undo discipline exactly: the layout is
+    deep-copied BEFORE the write and handed to _finalize_accept, so one Undo
+    reverts the layout write and the accept together -- they were one click.
+    """
+    pending = pending_accept
+    if pending is None or pending.get("stage") != "character":
+        return _render_current()
+    snapshot = copy.deepcopy(layout)
+    writer(pending["alias_folder"], pending["alias_variant"], layout)
+    return _commit_pending_accept(layout_snapshot=snapshot)
+
+
+def on_character_alias_group_route():
+    """Pin this name to the franchise's group subfolder, then finish the accept.
+
+    Unlike a dismissal this DOES decide routing: archive.py honours the record
+    ahead of a roster match, so the image files without a character folder ever
+    being created for the name."""
+    return _persistent_alias_answer(save_character_group_route)
+
+
+def on_character_alias_dismiss():
+    """Stop prompting about this name, then finish the accept.
+
+    Review-side only, deliberately: the reviewer said the question is noise,
+    not that they'd decided where the image goes. Routing is unchanged, so on a
+    nested franchise without `"fallback": "root"` archive.py still flags it."""
+    return _persistent_alias_answer(save_character_alias_dismissal)
 
 
 def on_undo():
@@ -1292,6 +1382,14 @@ with gr.Blocks(title="Oshiire review") as demo:
                     with gr.Row():
                         char_alias_save_btn = gr.Button("Save alternate name", variant="primary")
                         char_alias_skip_btn = gr.Button("Just file this image, don't save")
+                    # The two persistent answers. Static like the pair above --
+                    # deliberately NOT in `outputs`: the panel's visibility is
+                    # carried by char_alias_group, and adding a component to
+                    # that list changes the repaint contract every handler has
+                    # to satisfy (see tests/test_render_contract.py).
+                    with gr.Row():
+                        char_alias_group_route_btn = gr.Button("Always file to Others_Group")
+                        char_alias_dismiss_btn = gr.Button("Stop asking about this name")
 
     outputs = [
         header_md,
@@ -1335,6 +1433,8 @@ with gr.Blocks(title="Oshiire review") as demo:
     map_prompt_confirm_btn.click(fn=on_map_prompt_confirm, inputs=[map_prompt_radio], outputs=outputs)
     char_alias_save_btn.click(fn=on_character_alias_save, inputs=[char_alias_dropdown], outputs=outputs)
     char_alias_skip_btn.click(fn=on_character_alias_skip, outputs=outputs)
+    char_alias_group_route_btn.click(fn=on_character_alias_group_route, outputs=outputs)
+    char_alias_dismiss_btn.click(fn=on_character_alias_dismiss, outputs=outputs)
     dup_action_btn.click(fn=on_reject_duplicate, outputs=outputs)
     undo_btn.click(fn=on_undo, outputs=outputs)
 

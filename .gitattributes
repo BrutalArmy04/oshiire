@@ -1,0 +1,31 @@
+# Line endings for this project's config files.
+#
+# shortname.py writes JSON and the shortname map with an explicit "\n" but used
+# to open the tmp file in text mode with newline=None, so the bytes that landed
+# on disk were whatever the OS translated that to -- CRLF on Windows, LF on
+# Linux. Every write site now passes newline="" so no translation happens and
+# the code's own "\n" reaches disk unchanged. These rules are the git-side half
+# of the same guarantee: a config file checked in from either platform stores
+# LF in the repo, so a rewrite from the other one is not a whole-file diff.
+#
+# The .example.* files are the tracked ones; layout.json and
+# data/series_aliases.json are gitignored personal config, listed here so that
+# if a fork ever tracks them the rule is already right.
+
+layout.json          text eol=lf
+layout.example.json  text eol=lf
+
+data/series_aliases.json          text eol=lf
+data/series_aliases.example.json  text eol=lf
+
+subreddit_map.example.json  text eol=lf
+manifest.example.json       text eol=lf
+
+# The shortname map is NOT covered here and cannot be: its path is
+# user-configured via layout["shortname_file"] and normally points OUTSIDE the
+# repo (this user's is an absolute path into the Google-Drive-synced archive
+# root), so no gitattributes pattern can reach it. The newline="" in
+# save_shortname_entry / undo_shortname_write is what makes that file
+# deterministic wherever it happens to live -- the only mechanism available.
+# The committed template is in the repo, so it can be pinned:
+known_series_names.example.txt  text eol=lf

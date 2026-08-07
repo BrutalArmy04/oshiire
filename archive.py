@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 from hash_index import DEFAULT_DB, record_indexed_file
 from manifest import load_manifest, save_manifest
 from shortname import (
+    is_group_routed,
     load_layout,
     load_series_aliases,
     load_shortname_map,
@@ -130,11 +131,26 @@ def route_entry(entry: dict, layout: dict, shortname_entries: list,
             if style == "nested":
                 same_series_group = entry.get("same_series_group", False)
                 identities = distinct_characters(character_list, folder_name, franchise_def, layout)
+                group_dir = f"{folder_name}/{layout['group_subfolder']}"
                 if same_series_group or len(identities) >= 2:
-                    group_dir = f"{folder_name}/{layout['group_subfolder']}"
                     return RouteResult("move", group_dir, note=note)
 
                 char_name, matched = identities[0] if identities else (None, None)
+
+                # A recorded "always file this name to the group folder" is a
+                # user directive, so it is checked BEFORE the roster match: an
+                # explicit answer outranks an incidental subfolder of the same
+                # name, and the Settings panel -- not a roster edit -- is where
+                # it gets retracted.
+                #
+                # Two group-routed names on one entry are no dedup hazard:
+                # distinct_characters keys on the RESOLVED subfolder, and a name
+                # with no subfolder resolves to None and keys on itself, so they
+                # stay two identities and take the len >= 2 branch above -- the
+                # same destination this returns.
+                if char_name and is_group_routed(folder_name, char_name, layout):
+                    return RouteResult("move", group_dir, note=note)
+
                 if matched:
                     return RouteResult("move", f"{folder_name}/{matched}", note=note)
 

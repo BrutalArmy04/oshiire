@@ -39,6 +39,16 @@
     }
   },
 
+  "_character_group_route_comment": "OPTIONAL. Per-franchise list of character names that ALWAYS file into the group subfolder, no matter what the roster says -- written by the review UI's 'Always file to Others_Group' button on the unmatched-name prompt. Use it for a name that is really a crowd, a pairing or a side cast you don't want a folder for. Unlike character_aliases this is a list of the names your TAGGER produces, not a variant -> folder map: there is no folder to point at, which is the whole point. Matched the same way character names always are (casing, spacing, punctuation and two-token order are tolerated), and checked BEFORE the roster, so an entry here outranks a same-named subfolder. Omit the whole key if you have none.",
+  "character_group_route": {
+    "Starfall Chronicle": ["The Quinn Twins"]
+  },
+
+  "_character_alias_dismissed_comment": "OPTIONAL. Per-franchise list of character names the review UI should stop asking about -- written by the 'Stop asking about this name' button on that same prompt. This has NO routing effect at all: it silences the prompt and nothing else, so an unmatched name here still gets flagged by archive.py unless its franchise sets 'fallback': 'root'. It is for names that aren't worth a folder and aren't worth a decision either (a one-off cameo, a mascot, a mistagged string). Same name matching as above. Omit the whole key if you have none.",
+  "character_alias_dismissed": {
+    "Starfall Chronicle": ["Unnamed Barkeep"]
+  },
+
   "franchises": {
     "Starfall Chronicle": {
       "style": "nested",

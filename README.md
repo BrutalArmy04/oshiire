@@ -146,6 +146,12 @@ Built since the first release:
   time — red for near-certain, amber for the uncertain band — with a one-click
   reject.
 - **Read-only history browser** (`history.py`) for looking up past decisions.
+- **In-app Settings tab.** The review UI is now tabbed, so config that used to
+  mean hand-editing JSON is editable from the browser. The first panel edits
+  `subreddit_map.json` — add, rename, or retract a subreddit→franchise/character
+  mapping — and holds the same line as the rest of the UI: it reads and writes
+  the file live (no cache), preserves the entries and comments it didn't touch,
+  and a delete or rename is always an explicit click, never a silent side effect.
 
 ## Known limitations
 
@@ -169,7 +175,22 @@ Built since the first release:
 - Live character/folder validation in the review UI, so a mismatch (e.g.
   tagging "Kuki Shinobu" when the archive folder is named "Shinobu") is
   caught at review time instead of at dry-run time.
-- A read-only layout/map viewer.
+- **The rest of the Settings panels.** The subreddit-map editor is the first;
+  franchise-alias, character-alias, series-alias, and shortname-file editors are
+  planned, so the whole config surface is editable in-app instead of by hand.
+  The file-level half is already in place: every writer these panels need now
+  has a matching remover in `shortname.py` (`remove_series_alias`,
+  `remove_character_alias`, `remove_shortname_entry`), each matching on the same
+  normalizer its lookup uses — so anything the UI can show, it can retract —
+  and each treating an absent target as a no-op that doesn't rewrite the file.
+  Character-name consolidation — filing every spelling of one character
+  (Saber / Artoria / Nero) under a single folder — lives here.
+- **A second Reddit account.** Read a second saved feed into the same archive,
+  deduplicated against the single namespace the manifest, tombstones, and hash
+  index already share.
+- **Upscaling under-sized art.** Flag, and optionally upscale, archived images
+  below a long-edge threshold (~1920px) — re-measured against the current
+  archive rather than an older count.
 - Additional ingesters (local folder import, Pixiv bookmarks).
 - `.sh` launchers for Linux/macOS.
 
