@@ -38,6 +38,17 @@ first time. For the pitch, architecture, and screenshots, see the main
    pip install -r requirements.txt
    ```
 
+   One of those dependencies is worth knowing about before it surprises you:
+   `curl_cffi` is pinned (`curl_cffi==0.16.2`) and is the transport Oshiire
+   uses for `old.reddit.com` HTML pages. old.reddit login-walls anything whose
+   TLS/HTTP2 fingerprint isn't a real browser's, so plain `requests` gets the
+   login page even carrying a valid session cookie and full browser headers;
+   `curl_cffi` impersonates Chrome's fingerprint and gets real pages back. The
+   pin is deliberate — the impersonation targets are tied to the bundled
+   libcurl build, so an unreviewed upgrade can change what "chrome" means on
+   the wire. Nothing else in the project imports it; it lives behind
+   `redditclient.py`.
+
 2. **Numpy gotcha — do this right after step 1.**
    `dghs-imgutils` pins `numpy<2`, but numpy 1.x has no prebuilt wheel for
    Python **3.13+** — pip falls back to building from source, which segfaults on
@@ -56,7 +67,19 @@ first time. For the pitch, architecture, and screenshots, see the main
 
 3. Get your Reddit saved-posts feed URL: go to
    `old.reddit.com/prefs/feeds`, find "your saved links", and copy its RSS
-   URL. **This URL is a secret** — it has a per-account access token embedded
+   URL. Reddit hands it to you on the `old.reddit.com` host — **change that to
+   `www.reddit.com`**, keeping everything from `/saved.rss?` onward exactly as
+   copied, so what you save looks like
+   `https://www.reddit.com/saved.rss?feed=<token>&user=<your-username>`.
+
+   That swap matters: since the end of July 2026 `old.reddit.com` answers
+   logged-out requests with its login page, so the old.reddit form of this URL
+   returns the login wall instead of your saves. The `www` host still serves
+   the feed with no cookie at all. (Ingest rewrites an old.reddit feed host to
+   `www` for you, but store the `www` form anyway — it is what actually gets
+   used, and it keeps the file honest about where the request goes.)
+
+   **This URL is a secret** — it has a per-account access token embedded
    in it, so treat it like a password, never commit it or share it. It stops
    working if you change your Reddit password (that's what invalidates it if
    it ever leaks — password change is also your recovery step if it does).
@@ -72,6 +95,37 @@ first time. For the pitch, architecture, and screenshots, see the main
      upload.
    - `REDDIT_USERNAME` — optional, included in the request User-Agent per
      Reddit's API etiquette guidelines. Leave it blank to use a generic value.
+   - `REDDIT_SESSION_COOKIE` — **the second secret in this file.** A logged-in
+     cookie string copied out of your browser. See below.
+
+   **About `REDDIT_SESSION_COOKIE`.** Three parts of Oshiire read
+   server-rendered `old.reddit.com` HTML rather than the feed: ingest's gallery
+   permalink fetch (galleries have no per-image data in the RSS), the backfill
+   CSV sweep, and `calibrate.py`. Since the end of July 2026 old.reddit
+   requires a logged-in session for those pages, and serves its login page —
+   as a normal HTTP 200 — to anyone without one. This cookie is what makes them
+   return real pages. The RSS feed does **not** need it; that is read from
+   `www.reddit.com` cookieless.
+
+   To get it: open devtools (F12) → **Network** tab → load any page on
+   `old.reddit.com` while logged in → click that request → **Headers** →
+   **Request Headers** → copy the entire `Cookie:` value. Paste it into `.env`
+   as one line:
+
+   ```
+   REDDIT_SESSION_COOKIE=reddit_session=<value>; token_v2=<value>; ...
+   ```
+
+   Treat it like a password — worse, in fact: whoever holds it is logged in as
+   you, with none of the feed token's read-only limits. It is gitignored along
+   with the rest of `.env`; never paste it into an issue, a chat, or a
+   screenshot. Leave it blank if you only ingest single-image posts from the
+   feed and never run backfill.
+
+   The cookie is necessary but not sufficient — those fetches also go out over
+   `curl_cffi`'s Chrome-impersonated transport (see step 1). You don't
+   configure that; it just explains why a hand-rolled `curl` with the same
+   cookie still hits the wall.
 
 5. Copy the example config files to their real (gitignored) names. Every
    template ships as `<name>.example.<ext>`; the copy is yours, stays local,
@@ -93,7 +147,7 @@ first time. For the pitch, architecture, and screenshots, see the main
 
 | Template | Copy it to | What it is |
 |---|---|---|
-| `.env.example` | `.env` | Feed URL and archive path. **Holds a secret** — see step 4. |
+| `.env.example` | `.env` | Feed URL, session cookie, and archive path. **Holds two secrets** — see steps 3 and 4. |
 | `layout.example.json` | `layout.json` | Your archive's filing rules: per-franchise style, aliases, special folders, wallpaper thresholds. |
 | `known_series_names.example.txt` | `known_series_names.txt` | `SHORTNAME = Full Series Name`, for series filed into `Others/Known Series/` rather than a folder of their own. |
 | `subreddit_map.example.json` | `subreddit_map.json` | subreddit → franchise (+ character). Grows as you review; you don't need to pre-fill it. |
@@ -288,6 +342,15 @@ workflow, including the AI tagging pass and the flag-resolution screen.
 If `1_ingest.bat` reports `downloaded=0` even though you've saved new things,
 nothing is broken — you've hit Reddit's saved-listing ceiling. See
 [BACKFILL.md](BACKFILL.md), which is the whole story and the fix.
+
+If instead a run stops with **`Reddit returned its login wall`**, or ingest
+warns that a gallery fetch hit it, your `REDDIT_SESSION_COOKIE` has expired —
+a password change or a logout invalidates it, and they expire on their own
+besides. Re-copy it from the browser (step 4) and re-run. Nothing is lost:
+backfill rewinds its cursor to the row it was on, and a walled gallery is
+recorded as a retryable `skipped` entry that the next ingest picks up. If the
+*feed* is the thing returning the wall, check `REDDIT_SAVED_FEED_URL` uses the
+`www.reddit.com` host (step 3) before assuming the token is dead.
 
 ## Usage
 

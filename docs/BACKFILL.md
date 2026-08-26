@@ -80,6 +80,35 @@ wrong file.
 
 ---
 
+## Prerequisite: a logged-in session cookie
+
+**The sweep will not work without `REDDIT_SESSION_COOKIE` set in `.env`.**
+
+At the end of July 2026 `old.reddit.com` began serving its login page to
+logged-out requests, and every row of this sweep is an old.reddit HTML fetch
+(see "What it does per row" below). Without a session cookie, all of them come
+back as the login wall.
+
+Set it as described in [SETUP.md](SETUP.md) step 4 — briefly: devtools →
+Network → any logged-in `old.reddit.com` request → Request Headers → copy the
+whole `Cookie:` value into `REDDIT_SESSION_COOKIE`. It is a secret; whoever
+holds it is logged in as you.
+
+Two things about this worth knowing before the sweep is running unattended:
+
+- **The cookie alone isn't enough.** These fetches go out over `curl_cffi`'s
+  Chrome-impersonated transport (`redditclient.py`), because old.reddit walls
+  on the TLS/HTTP2 fingerprint too — plain `requests` gets the login page
+  carrying the exact same cookie. `requirements.txt` installs it; you don't
+  configure anything.
+- **The cookie expires**, and a password change or logout invalidates it
+  immediately. When that happens mid-sweep the run stops cleanly and says so —
+  see [Reddit's login wall](#reddits-login-wall) under Troubleshooting.
+
+`calibrate.py` (Step 2) reads the same pages and needs the same cookie.
+
+---
+
 ## Step 1: build the hash index — do this FIRST
 
 ```
@@ -182,7 +211,11 @@ nearest archived image:
 posts from a period where you know your archive coverage is good, fetches each
 one, and reports the distribution of distances between the Reddit copy and its
 nearest archived neighbour. Pick a date range where you are confident you filed
-nearly everything you saved.
+nearly everything you saved. It fetches old.reddit permalinks exactly as the
+sweep does, so it needs `REDDIT_SESSION_COOKIE` too — and it aborts rather than
+measure through a login wall, because a walled page has no post markup and
+would be scored as a dead post, quietly poisoning the very thresholds the run
+exists to produce.
 
 It is a measurement tool and nothing else: read-only over the CSV and the index,
 never writes `manifest.json`, never touches `ARCHIVE_DIR`, and writes only under
@@ -222,7 +255,10 @@ is fine, and is the intended way to use it.
    skip it. No fetch, no network.
 2. **Fetch the post.** The CSV has no image URL, so it fetches the
    `old.reddit.com` HTML permalink. (Reddit's `.json` and API endpoints return
-   403 for this project's User-Agent; the plain HTML page works.)
+   403 for this project's User-Agent; the plain HTML page works.) The fetch
+   goes through `redditclient.py`: a Chrome-impersonated request carrying
+   `REDDIT_SESSION_COOKIE`, which is what gets a real page rather than
+   old.reddit's login wall.
 3. **Classify.** Single image, gallery (each image handled independently), or
    dead.
 4. **Download and hash**, then route by distance into owned / uncertain / new.
@@ -268,6 +304,16 @@ The handling:
   re-queued forever.
 - **404 and 5xx** stay retryable. Those do flip back, and a 5xx is often
   throttling wearing a different hat.
+- **The login wall is not a dead post either, and it is not a 4xx.** It arrives
+  as a normal HTTP 200 whose body is old.reddit's login page — no post markup
+  at all — so left unchecked it would classify a live, uncaptured post as
+  `dead (removed)`, permanently and invisibly. The sweep detects it explicitly
+  (`useragent.is_login_wall`) and raises `RedditAuthWall`, which **aborts the
+  run loudly** rather than writing the row: it checkpoints the cursor to the
+  *previous* row, prints what to fix, and leaves the interrupted row queued for
+  the next run. Every subsequent row would have hit the same wall, so stopping
+  is the only outcome that doesn't corrupt the log. `--retry-failed` behaves
+  the same way.
 
 Recover anything caught by the above:
 
@@ -440,7 +486,7 @@ Five steps, with summaries printed for each:
 |---|---|---|
 | 1 | `backfill.py --limit 500` | Chews through the next slice of history |
 | 2 | `export_unsave_list.py` | Refreshes the whitelist with everything newly captured |
-| — | 120s cooldown | Both halves hit old.reddit; back-to-back arrives pre-throttled |
+| — | 120s cooldown | Both halves hit Reddit on one rate-limit budget; back-to-back arrives pre-throttled |
 | 3 | `ingest.py` | Ordinary RSS ingest of recent saves |
 | 4 | `imagemeta.py warm` | Hashes what ingest just downloaded, so review launches instantly |
 | 5 | `hash_index.py build` | Re-indexes the archive, catching hand-filed images |
@@ -470,6 +516,28 @@ page and checking whether recent saves appear — if they don't, drain (step 5).
 If you have *already* drained and it still says 0, check that the drain actually
 removed anything: the userscript's counter distinguishes `unsaved` from
 `uncertain`, and a run that ends with everything `uncertain` changed nothing.
+
+### Reddit's login wall
+
+The sweep stops with:
+
+```
+! Reddit returned its login wall instead of the post.
+```
+
+`REDDIT_SESSION_COOKIE` is missing, or it has expired — a password change or a
+logout invalidates it, and cookies age out on their own besides. Re-copy it
+from the browser (devtools → Network → a logged-in `old.reddit.com` request →
+Request Headers → the whole `Cookie:` value) into `.env`, then re-run.
+
+Nothing is lost and nothing is mislabelled. The wall is caught before the row
+is classified, so no live post gets written down as `dead (removed)`; the
+cursor is rewound to before the interrupted row, and the sweep picks up exactly
+there next time.
+
+If refreshing the cookie doesn't fix it, check you are copying it from a page
+on `old.reddit.com` while actually logged in — a cookie jar from a logged-out
+session looks valid and isn't.
 
 ### Repeated 429s
 

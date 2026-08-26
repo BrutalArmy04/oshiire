@@ -52,6 +52,8 @@ from shortname import (
     undo_shortname_write,
 )
 
+
+
 warnings.filterwarnings("ignore", category=StarletteDeprecationWarning)
 
 # Mirrors archive.py's ORIGINAL_RE/is_original -- duplicated rather than
@@ -118,6 +120,8 @@ _archive_dir_value = os.environ.get("ARCHIVE_DIR")
 archive_dir = Path(_archive_dir_value) if _archive_dir_value else None
 hash_size = index_hash_size()
 
+
+
 # Top-up pass: hash any staging image that doesn't have a current hash yet, so
 # duplicate detection compares against the whole corpus rather than only
 # images already viewed this session. Normally a no-op, because the
@@ -137,9 +141,12 @@ if _warmed:
     print(f"\r  hashed {_warmed} image(s).{' ' * 40}")
 else:
     print("  all staging images already hashed.")
+_mark("warm done")
 
 archive_hashes = load_archive_hashes()
+_mark("archive hashes loaded")
 archive_path_map = build_archive_path_map(manifest)
+_mark("path map built")
 # What the index ACTUALLY holds. Anything filed since the index was last built
 # is missing from it, and find_duplicates uses this to compare those entries
 # from their cached manifest hash instead of assuming the index covered them.
@@ -1308,8 +1315,8 @@ def on_settings_delete(selected):
         status=f"🗑️ Deleted **{selected}**.",
     )
 
-
-with gr.Blocks(title="Oshiire review") as demo:
+_mark("before Blocks build")
+with gr.Blocks(title="Oshiire review", analytics_enabled=False) as demo:
   with gr.Tabs():
    # Indentation inside the tabs is deliberately shallow (1 space per level):
    # wrapping the existing panel in a Tab must not reflow every line of it,
@@ -1533,7 +1540,7 @@ with gr.Blocks(title="Oshiire review") as demo:
     )
     settings_add_btn.click(fn=on_settings_add, outputs=settings_outputs)
 
-
+_mark("Blocks built, about to launch")
 if __name__ == "__main__":
     # A duplicate's thumbnail can live in ARCHIVE_DIR, which is outside the
     # project tree; Gradio serves only cwd/temp by default and raises

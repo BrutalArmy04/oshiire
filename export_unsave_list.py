@@ -13,8 +13,14 @@ output is `data/unsave_list.json` -- a flat array of BARE base-36 post ids (`t3_
 `abc123`), the form the userscript matches against old.reddit's `data-fullname`.
 
 Safety model (an id is emitted only if the post is provably captured):
-  * Every manifest entry (any status) -- captured. Keyed on the `post_id` FIELD,
-    deduped, since gallery posts contribute several entries sharing one parent id.
+  * Manifest entries whose status is `archived` -- the image is in the local
+    archive. Keyed on the `post_id` FIELD, deduped, since gallery posts
+    contribute several entries sharing one parent id; a post_id is emitted only
+    when EVERY entry sharing it is archived, so one un-archived image of a
+    gallery holds the whole post back. Any other status (`pending_review`,
+    `download_failed`, `skipped`/`auth_walled`, `rejected`) means the image is
+    NOT in the archive: unsaving such a post removes the only remaining copy
+    from Reddit and loses it permanently.
   * backfill log `owned` -- image already in the local archive (no manifest entry
     is created for these, so the log is the ONLY record).
   * backfill log `dead` with reason removed/no_image/gallery_no_images -- the post
@@ -47,14 +53,31 @@ def bare(post_id: str) -> str:
     return post_id[3:] if post_id.startswith("t3_") else post_id
 
 
+# Statuses that prove the image reached the local archive. Widen to
+# {"archived", "rejected"} if a deliberate reject should also count as settled.
+CAPTURED_STATUSES = {"archived"}
+
+
 def collect_manifest_ids(manifest: dict) -> set[str]:
-    """Bare ids of every manifest entry, deduped on the `post_id` FIELD (gallery
-    entries share one parent id across their suffixed dict keys)."""
-    return {
-        bare(entry["post_id"])
-        for entry in manifest.values()
-        if entry.get("post_id")
-    }
+    """Bare ids of manifest posts that are fully archived, deduped on the
+    `post_id` FIELD (gallery entries share one parent id across their suffixed
+    dict keys).
+
+    A post_id qualifies only when EVERY entry carrying it is `archived`. The
+    aggregation is the point: a gallery contributes one entry per image, and a
+    post whose image 1 archived but whose image 2 is still `pending_review` is
+    NOT captured -- unsaving it would drop image 2 off Reddit before it was
+    ever downloaded. Entry existence marks that ingest STARTED; only the
+    terminal status marks that it finished."""
+    archived: set[str] = set()
+    held_back: set[str] = set()
+    for entry in manifest.values():
+        post_id = entry.get("post_id")
+        if not post_id:
+            continue
+        target = archived if entry.get("status") in CAPTURED_STATUSES else held_back
+        target.add(bare(post_id))
+    return archived - held_back
 
 
 def scan_backfill_log(path: Path) -> tuple[set[str], set[str], set[str], set[str]]:

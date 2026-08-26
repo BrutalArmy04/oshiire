@@ -136,3 +136,4 @@ docs/PROJECT_CONTEXT.md
 # only re-include migrations/ if the parent itself is not excluded.
 scripts/*
 !scripts/migrations/
+authtest.py

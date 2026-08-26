@@ -20,15 +20,21 @@ import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import feedparser
 import requests
 from dotenv import load_dotenv
 
+import redditclient
 from manifest import load_manifest, save_manifest
 from tag import run_tagging
-from useragent import build_user_agent
+from useragent import (
+    RedditAuthWall,
+    build_headers,
+    build_user_agent,
+    is_login_wall,
+)
 
 STAGING_DIR = Path("staging")
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
@@ -53,7 +59,12 @@ GALLERY_TILE_RE = re.compile(
 # "gallery_post"/"gallery_fetch_failed"/"gallery_parse_error" are retried on
 # every ingest run (see retry_skipped_galleries); "gallery_no_images" is a
 # settled, confirmed-non-gallery outcome and is never retried.
-RETRYABLE_SKIP_REASONS = {"gallery_post", "gallery_fetch_failed", "gallery_parse_error"}
+# "auth_walled" joins them: it means the fetch hit Reddit's login page, which
+# a valid REDDIT_SESSION_COOKIE turns back into a real page -- a condition that
+# clears from outside the entry, so it must stay retryable.
+RETRYABLE_SKIP_REASONS = {
+    "gallery_post", "gallery_fetch_failed", "gallery_parse_error", "auth_walled",
+}
 
 
 def extract_subreddit(entry, permalink):
@@ -92,9 +103,41 @@ def classify_entry(entry, permalink):
     return "skip", "unsupported_link_type", None
 
 
+class FeedUnavailable(RuntimeError):
+    """Raised when the saved feed answered 200 with Reddit's login page
+    instead of the feed. That page parses as a feed with zero entries, which
+    ingest would otherwise report as a successful, empty run."""
+
+
+def _normalize_feed_host(feed_url):
+    """old.reddit.com -> www.reddit.com; any other host is returned as-is.
+
+    Path, query and the secret `feed=` token are carried across untouched --
+    only the host is rewritten, because old.reddit stopped serving its
+    logged-out endpoints (this feed included) at the end of July 2026 and
+    answers with a login page instead."""
+    parts = urlsplit(feed_url)
+    if (parts.hostname or "").lower() != "old.reddit.com":
+        return feed_url
+    netloc = "www.reddit.com" + (f":{parts.port}" if parts.port else "")
+    return urlunsplit(parts._replace(netloc=netloc))
+
+
 def fetch_feed(feed_url):
-    resp = requests.get(feed_url, headers={"User-Agent": build_user_agent()}, timeout=15)
+    resp = requests.get(
+        _normalize_feed_host(feed_url),
+        headers={"User-Agent": build_user_agent()},
+        timeout=15,
+    )
     resp.raise_for_status()
+    if is_login_wall(resp.url, resp.text):
+        raise FeedUnavailable(
+            "The saved feed returned Reddit's login wall instead of your saves. "
+            "Check that REDDIT_SAVED_FEED_URL uses the www.reddit.com host -- "
+            "old.reddit.com now requires login for logged-out requests. If it "
+            "already does, the feed token is no longer valid; re-copy it from "
+            "reddit.com/prefs/feeds/."
+        )
     return feedparser.parse(resp.content)
 
 
@@ -114,6 +157,20 @@ class GalleryParseError(Exception):
     so the caller can keep this retryable instead of settling on it forever."""
 
 
+def _force_old_reddit_host(permalink):
+    """Rewrite a permalink onto old.reddit.com, whatever host it arrived on.
+
+    Not the mirror image of _normalize_feed_host: the gallery-tile markup
+    GALLERY_TILE_RE matches exists ONLY in old.reddit's server-rendered HTML.
+    www.reddit.com returns a JS shell with no tiles, which would parse as a
+    confirmed-empty gallery -- a wrong answer that looks like a right one."""
+    parts = urlsplit(permalink)
+    if not parts.netloc:
+        return permalink
+    netloc = "old.reddit.com" + (f":{parts.port}" if parts.port else "")
+    return urlunsplit(parts._replace(netloc=netloc))
+
+
 def fetch_gallery_images(permalink):
     """GETs the plain HTML permalink (not `.json` -- Reddit's json/api
     endpoints return 403 for this User-Agent regardless of post) and
@@ -128,18 +185,22 @@ def fetch_gallery_images(permalink):
         succeeded and the page genuinely has no gallery (removed/video/etc).
 
     Raises:
-        requests.RequestException -- network/timeout/non-2xx.
+        redditclient.RedditFetchError -- network/timeout/non-2xx.
         GalleryParseError -- fetch succeeded and "gallery-tile" markup is
             present in the page, but no tile matched the structured regex --
             likely markup drift, not a genuine non-gallery page.
+        RedditAuthWall -- fetch returned 200 but the body is the login page.
     """
-    if "old.reddit.com" not in permalink:
-        print(f"warning: unexpected permalink host for gallery fetch: {permalink}", file=sys.stderr)
-
-    resp = requests.get(
-        permalink, headers={"User-Agent": build_user_agent(), "Cookie": "over18=1"}, timeout=15
+    resp = redditclient.get(
+        _force_old_reddit_host(permalink),
+        headers=build_headers(over18=True),
+        timeout=15,
     )
-    resp.raise_for_status()
+    redditclient.raise_for_status(resp)
+    if is_login_wall(resp.url, resp.text):
+        raise RedditAuthWall(
+            f"permalink fetch returned Reddit's login page: {permalink}"
+        )
     html = resp.text
 
     seen = {}
@@ -218,9 +279,16 @@ def retry_skipped_galleries(manifest, keys=None):
 
         try:
             images = fetch_gallery_images(permalink)
-        except requests.RequestException as exc:
+        except redditclient.RedditFetchError as exc:
             print(f"retry: gallery fetch failed for {key}: {exc}", file=sys.stderr)
             entry["skip_reason"] = "gallery_fetch_failed"
+            entry.pop("reason", None)
+            entry["fetched_at"] = fetched_at
+            counts["still_failed"] += 1
+            continue
+        except RedditAuthWall as exc:
+            print(f"retry: auth wall for {key}: {exc}", file=sys.stderr)
+            entry["skip_reason"] = "auth_walled"
             entry.pop("reason", None)
             entry["fetched_at"] = fetched_at
             counts["still_failed"] += 1
@@ -361,6 +429,10 @@ def _parse_args():
 def main():
     args = _parse_args()
 
+    # Loaded before the triage dispatch, not after it: --retry-skipped fetches
+    # permalinks, and that fetch now needs REDDIT_SESSION_COOKIE out of .env.
+    load_dotenv()
+
     # Triage modes read/write only the manifest -- no feed URL, no network
     # (beyond --retry-skipped's own gallery fetch), so they work even when the
     # feed is unreachable or unconfigured.
@@ -374,7 +446,6 @@ def main():
         retry_skipped(load_manifest(), args.retry_skipped)
         return
 
-    load_dotenv()
     feed_url = os.environ.get("REDDIT_SAVED_FEED_URL")
     if not feed_url:
         print(
@@ -389,6 +460,9 @@ def main():
 
     try:
         parsed = fetch_feed(feed_url)
+    except FeedUnavailable as exc:
+        print(exc, file=sys.stderr)
+        sys.exit(1)
     except requests.RequestException as exc:
         print(f"Failed to fetch saved feed: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -401,6 +475,7 @@ def main():
     known_post_ids = {entry.get("post_id") for entry in manifest.values()}
 
     downloaded = skipped = failed = 0
+    auth_wall_warned = False
 
     for entry in parsed.entries:
         post_id = entry.get("id")
@@ -431,7 +506,7 @@ def main():
             if kind == "gallery":
                 try:
                     images = fetch_gallery_images(permalink)
-                except requests.RequestException as exc:
+                except redditclient.RedditFetchError as exc:
                     print(f"gallery fetch failed for {post_id}: {exc}", file=sys.stderr)
                     manifest[post_id] = {
                         "post_id": post_id,
@@ -440,6 +515,29 @@ def main():
                         "permalink": permalink,
                         "status": "skipped",
                         "skip_reason": "gallery_fetch_failed",
+                        "fetched_at": fetched_at,
+                    }
+                    failed += 1
+                    continue
+                except RedditAuthWall as exc:
+                    print(f"gallery fetch hit the login wall for {post_id}: {exc}",
+                          file=sys.stderr)
+                    if not auth_wall_warned:
+                        print(
+                            "warning: gallery posts need a logged-in session. Set "
+                            "REDDIT_SESSION_COOKIE in .env (see .env.example), then run "
+                            "`python ingest.py --retry-skipped` to pick these up. "
+                            "Single-image posts are unaffected and keep ingesting.",
+                            file=sys.stderr,
+                        )
+                        auth_wall_warned = True
+                    manifest[post_id] = {
+                        "post_id": post_id,
+                        "title": title,
+                        "subreddit": subreddit,
+                        "permalink": permalink,
+                        "status": "skipped",
+                        "skip_reason": "auth_walled",
                         "fetched_at": fetched_at,
                     }
                     failed += 1

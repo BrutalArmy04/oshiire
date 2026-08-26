@@ -3,6 +3,14 @@ python-dotenv>=1.0
 requests>=2.31
 gradio>=4.0
 
+# old.reddit.com login-walls anything whose TLS/HTTP2 fingerprint isn't a
+# real browser's -- plain `requests` gets the login page even with a valid
+# session cookie and full browser headers. curl_cffi's impersonation is what
+# gets the three old.reddit HTML fetches (redditclient.py) real pages. Pinned:
+# impersonation targets are tied to the bundled libcurl build, so an
+# unreviewed upgrade can change what "chrome" means on the wire.
+curl_cffi==0.16.2
+
 # Python 3.14. Older versions are untested and unsupported: nothing in the
 # syntax needs 3.14 (int.bit_count(), 3.10+, is the highest requirement), but
 # the stack below -- dghs-imgutils, onnxruntime, Pillow, imagehash, gradio --

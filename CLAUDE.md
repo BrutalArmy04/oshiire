@@ -16,6 +16,19 @@ Full design: see `docs/blueprint.md`.
 - The feed URL is a secret (it contains a per-account token). It lives only in
   `.env` as `REDDIT_SAVED_FEED_URL` and is loaded via python-dotenv. Never
   hardcode, print, log, or commit it.
+- The feed is read from the `www.reddit.com` host, cookieless. At the end of
+  July 2026 `old.reddit.com` began answering logged-out requests with its login
+  page, so the old.reddit form of the feed URL returns the login wall instead
+  of the saves; `ingest._normalize_feed_host` rewrites the host and
+  `useragent.is_login_wall` detects the wall (it arrives as a normal 200, so a
+  status code cannot).
+- old.reddit HTML pages are a separate, walled path. The gallery-permalink
+  fetch, the backfill sweep and `calibrate.py` all read server-rendered
+  old.reddit HTML, and all three need `REDDIT_SESSION_COOKIE` (see Security
+  rules) sent over a Chrome-impersonated transport. Every one of them goes
+  through `redditclient.py`, which is the ONLY module allowed to import
+  `curl_cffi`; the cookie is what defeats the wall, and the descriptive
+  User-Agent from `useragent.py` still rides on top.
 - The feed is READ-ONLY. The app cannot unsave, vote, or write anything back to
   Reddit. "Unsave after archiving" is explicitly OUT OF SCOPE.
 - The feed returns only recent saves, not full history. Design for incremental
@@ -28,19 +41,27 @@ Full design: see `docs/blueprint.md`.
   anywhere is `int.bit_count()`, 3.10+); the floor is an untested-below line,
   not a technical one. On 3.13+ the numpy pin needs an override — see the numpy
   gotcha in docs/SETUP.md, which therefore always applies here.
-- Ingestion: `feedparser` (parses the saved RSS/Atom feed) + `requests` (image
-  downloads)
+- Ingestion: `feedparser` (parses the saved RSS/Atom feed) + `requests` (the
+  www feed and image downloads) + `curl_cffi` (pinned; the Chrome-impersonated
+  transport in `redditclient.py` for old.reddit HTML — plain `requests` gets
+  the login wall even with a valid cookie, because the deciding factor is the
+  TLS/HTTP2 fingerprint)
 - AI tagger: WD14 via `imgutils` (installed only when Slice 4 begins)
 - UI: `gradio`
 - Config/secrets: `python-dotenv`
 ## Security rules (do not violate)
-- The only secret is `REDDIT_SAVED_FEED_URL` in `.env`. Reference it as
-  `os.environ["REDDIT_SAVED_FEED_URL"]`. Never inline or log it.
+- `.env` holds TWO secrets: `REDDIT_SAVED_FEED_URL` (a per-account feed token)
+  and `REDDIT_SESSION_COOKIE` (a logged-in cookie string copied from the
+  browser — whoever holds it is logged in as the account owner, so it is the
+  more dangerous of the two). Reference the feed URL as
+  `os.environ["REDDIT_SAVED_FEED_URL"]`; the cookie is read in exactly one
+  place, `useragent.build_headers`, and callers pass the built headers around
+  rather than the value. Never inline or log either.
 - `.env`, `staging/`, `archive/`, and `manifest.json` are gitignored and must
   stay that way. If you add a new file holding secrets or account-derived data,
   add it to `.gitignore` in the same change.
-- Ship a `.env.example` with an empty `REDDIT_SAVED_FEED_URL=`, never a filled
-  one.
+- Ship a `.env.example` with an empty `REDDIT_SAVED_FEED_URL=` and an empty
+  `REDDIT_SESSION_COOKIE=`, never a filled one.
 ## Architectural invariants
 - **`manifest.json` is the single source of truth.** The downloader and the UI
   never call each other directly — they communicate only via the manifest.
@@ -460,9 +481,12 @@ Hard rules:
    note above) — the RSS feed has no per-image data, so this requires an
    extra fetch of the post's plain `old.reddit.com` permalink HTML (Reddit's
    `.json`/API endpoints return 403 for this project's User-Agent; the HTML
-   permalink works, with `Cookie: over18=1` needed for NSFW posts). A gallery
-   whose fetch fails or can't be parsed gets a retryable `skipped` placeholder
-   instead (see the Dedup rule above). Skip anything already handled in the
+   permalink works, with `Cookie: over18=1` needed for NSFW posts and, since
+   end-July 2026, `REDDIT_SESSION_COOKIE` over `redditclient.py`'s impersonated
+   transport needed for any of it — a walled fetch is recorded as a retryable
+   `skipped`/`auth_walled` entry). A gallery whose fetch fails or can't be
+   parsed gets a retryable `skipped` placeholder instead (see the Dedup rule
+   above). Skip anything already handled in the
    manifest. Manifest lives at `staging/manifest.json`. No AI, no UI, no
    archiving.
 1. Metadata tagging: set `franchise`, `character_guess` (list), `guess_confidence`,

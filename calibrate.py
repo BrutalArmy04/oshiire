@@ -55,7 +55,13 @@ from hash_index import (
 # is what the old local copy of this function was actually protecting. The
 # distinct product token below is the part worth keeping: it makes a measurement
 # run attributable separately from ordinary ingest traffic.
-from useragent import build_user_agent
+import redditclient
+from useragent import (
+    RedditAuthWall,
+    build_headers,
+    build_user_agent,
+    is_login_wall,
+)
 
 CSV_PATH = Path("data/saved_posts.csv")
 DEFAULT_OUT = Path("calibration")
@@ -80,7 +86,6 @@ GALLERY_TILE_RE = re.compile(
 )
 
 USER_AGENT = build_user_agent(USER_AGENT_PRODUCT)
-FETCH_HEADERS = {"User-Agent": USER_AGENT, "Cookie": "over18=1"}
 HTTP_TIMEOUT = 15
 DOWNLOAD_TIMEOUT = 30
 
@@ -96,16 +101,33 @@ def permalink_for(post_id: str) -> str:
 
 def fetch_post_html(post_id: str) -> Optional[str]:
     """GET the old.reddit permalink, following redirects. Returns page text, or
-    None on a non-2xx / network error (caller treats that as dead/failed)."""
+    None on a non-2xx / network error (caller treats that as dead/failed).
+
+    The login wall is NOT one of those cases and must never be returned as
+    page text: it arrives as a normal 200 carrying no `thing` markup, so
+    `extract_created_utc`/`extract_image_url` would find nothing and this run
+    would record a live post as dead -- silently poisoning the very thresholds
+    it exists to measure. Raising aborts the run instead, which is the honest
+    outcome: every row after the wall would be measured wrong too.
+
+    Raises:
+        RedditAuthWall -- fetch returned 200 but the body is the login page.
+    """
     try:
-        resp = requests.get(
-            permalink_for(post_id), headers=FETCH_HEADERS, timeout=HTTP_TIMEOUT
+        resp = redditclient.get(
+            permalink_for(post_id),
+            headers=build_headers(USER_AGENT_PRODUCT, over18=True),
+            timeout=HTTP_TIMEOUT,
         )
-    except requests.RequestException as exc:
+    except redditclient.RedditFetchError as exc:
         print(f"  ! fetch error {post_id}: {exc}", file=sys.stderr)
         return None
     if resp.status_code != 200:
         return None
+    if is_login_wall(resp.url, resp.text):
+        raise RedditAuthWall(
+            f"permalink fetch returned Reddit's login page: {post_id}"
+        )
     return resp.text
 
 

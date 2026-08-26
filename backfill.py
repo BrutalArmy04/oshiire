@@ -61,15 +61,22 @@ from pathlib import Path
 from typing import Optional
 
 import requests
+from dotenv import load_dotenv
 
 # Mandated reuse -- hashing + nearest-neighbour, atomic manifest I/O, and the
 # Slice 1 metadata tagger. We also borrow ingest.py's download/UA/gallery-tile
 # primitives so this sweep is polite in exactly the same way as normal ingest.
+import redditclient
 from hash_index import DEFAULT_DB, query_image, read_hash_bits, _configure_pillow
 from manifest import load_manifest, save_manifest
 from tag import tag_entry
 from tombstones import check_image, load_signatures
-from useragent import build_user_agent
+from useragent import (
+    RedditAuthWall,
+    build_headers,
+    build_user_agent,
+    is_login_wall,
+)
 from ingest import (
     GALLERY_TILE_RE,
     IMAGE_EXTENSIONS,
@@ -91,8 +98,9 @@ CHECKPOINT_EVERY = 50  # save manifest + advance cursor this often (crash-safety
 OWNED_MAX = 8       # <= 8   : already owned
 UNCERTAIN_MAX = 11  # 9..11  : uncertain band; 12+ : genuinely new
 
-USER_AGENT = build_user_agent()
-FETCH_HEADERS = {"User-Agent": USER_AGENT, "Cookie": "over18=1"}
+# Request headers are built per call by useragent.build_headers rather than
+# held in a module constant: REDDIT_SESSION_COOKIE is read at call time, so a
+# constant built at import would freeze in whatever was set before load_dotenv.
 HTTP_TIMEOUT = 15
 
 # Rate-limit handling. Most old saves ARE genuine dead links (see the module
@@ -170,7 +178,8 @@ def _fail_detail(exc: BaseException) -> str:
     msg = " ".join(str(exc).split())
     if len(msg) > MAX_FAIL_DETAIL:
         msg = msg[:MAX_FAIL_DETAIL - 3] + "..."
-    return f"{type(exc).__name__}: {msg}" if msg else type(exc).__name__
+    name = getattr(exc, "kind", "") or type(exc).__name__
+    return f"{name}: {msg}" if msg else name
 
 
 def fail_kind(detail: Optional[str]) -> str:
@@ -197,11 +206,16 @@ def fetch_post_html(csv_id: str) -> tuple[Optional[str], Optional[str]]:
     for attempt in range(len(RATE_LIMIT_BACKOFF) + 1):
         resp = None
         try:
-            resp = requests.get(url, headers=FETCH_HEADERS, timeout=HTTP_TIMEOUT)
-        except requests.RequestException as exc:
+            resp = redditclient.get(url, headers=build_headers(over18=True),
+                                    timeout=HTTP_TIMEOUT)
+        except redditclient.RedditFetchError as exc:
             last_exc = exc  # timeout / connection reset -> often a throttle symptom
         else:
             if resp.status_code == 200:
+                if is_login_wall(resp.url, resp.text):
+                    # A 200 carrying the login page has no `thing` markup, so
+                    # letting it through would classify a live post as removed.
+                    raise RedditAuthWall(csv_id)
                 return resp.text, None
             if resp.status_code != 429:
                 # Genuine dead link (403/404/5xx/redirect-to-removed). Keep the
@@ -537,6 +551,20 @@ def run(args) -> None:
                       file=sys.stderr)
                 print_summary(state, len(rows))
                 return
+            except RedditAuthWall:
+                # Same shape as the 429 stop, different cause: the row is fine,
+                # the request was not logged in. Checkpoint up to the PREVIOUS
+                # row so this one is retried once the cookie is in place.
+                checkpoint(i)
+                _cleanup_tmp()
+                print(f"\n! Reddit returned its login wall instead of the post.\n"
+                      f"  old.reddit requires a logged-in session for these pages.\n"
+                      f"  Set or refresh REDDIT_SESSION_COOKIE in .env (see\n"
+                      f"  .env.example), then re-run backfill.\n"
+                      f"  Stopped cleanly at row {i}; it will be retried next run.",
+                      file=sys.stderr)
+                print_summary(state, len(rows))
+                return
             print(f"  [{i}] {fullname} {outcome}")
 
             # Circuit breaker: a long run of fetch_failed is soft-throttling, not a
@@ -687,6 +715,16 @@ def run_retry_failed(args) -> None:
                   file=sys.stderr)
             stopped_early = True
             break
+        except RedditAuthWall:
+            checkpoint()
+            _cleanup_tmp()
+            print(f"\n! Reddit returned its login wall instead of the post.\n"
+                  f"  Set or refresh REDDIT_SESSION_COOKIE in .env (see .env.example),\n"
+                  f"  then re-run `python backfill.py --retry-failed`.\n"
+                  f"  Stopped after {n} row(s); the rest stay queued.",
+                  file=sys.stderr)
+            stopped_early = True
+            break
         print(f"  [{n}] {fullname} {outcome}")
 
         # NO consecutive-failure breaker here -- see FETCH_FAIL_ABORT_THRESHOLD.
@@ -782,6 +820,8 @@ def process_row(csv_id, fullname, permalink, manifest, db_path, sleep, batch,
         return "gallery[" + ",".join(per) + "]"
     except RateLimited:
         raise  # hard throttle -> propagate so run() can stop the sweep cleanly
+    except RedditAuthWall:
+        raise  # login wall -> propagate; every later row would hit it too
     except Exception as exc:  # last-resort guard: one bad row never stops the sweep
         batch["failed"] += 1
         log_outcome({"post_id": fullname, "outcome": "failed",
@@ -822,6 +862,10 @@ def print_summary(state, total_rows) -> None:
 # CLI
 # --------------------------------------------------------------------------- #
 def main() -> None:
+    # First, before anything reads the environment: the permalink fetch needs
+    # REDDIT_SESSION_COOKIE, and build_user_agent needs REDDIT_USERNAME.
+    load_dotenv()
+
     # Archive/match paths can contain non-Latin (e.g. Japanese) characters; the
     # Windows console defaults to cp1252 and would crash printing them.
     for stream in (sys.stdout, sys.stderr):

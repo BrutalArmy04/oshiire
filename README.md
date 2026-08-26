@@ -8,7 +8,7 @@ reject before filing it into a sorted personal archive.
 
 Everything runs locally. No image, title, or metadata is ever sent to a third
 party — the only outbound network calls are to Reddit itself (to read the
-feed and download images).
+feed, fetch post pages, and download images).
 
 **Setup & usage:** see [docs/SETUP.md](docs/SETUP.md).
 **Reaching saves the RSS feed can't see:** see [docs/BACKFILL.md](docs/BACKFILL.md).
@@ -110,10 +110,15 @@ it was flagged.
   one extra install step — see the numpy note in
   [docs/SETUP.md](docs/SETUP.md).
 - **Ingestion:** `feedparser` (parses the saved-posts RSS/Atom feed) +
-  `requests` (image downloads). Reddit disabled self-serve API app creation,
-  so this project deliberately does not use `praw` or the Data API — the
-  private saved-posts RSS feed is the only way left to read a saved list
-  without going through Reddit's third-party-app approval process.
+  `requests` (the feed itself, read cookieless from `www.reddit.com`, and
+  image downloads) + `curl_cffi` (pinned; the Chrome-impersonated transport,
+  isolated in `redditclient.py`, that the `old.reddit.com` HTML fetches go
+  through — old.reddit login-walls anything whose TLS/HTTP2 fingerprint isn't
+  a real browser's, so a session cookie alone doesn't get through). Reddit
+  disabled self-serve API app creation, so this project deliberately does not
+  use `praw` or the Data API — the private saved-posts RSS feed is the only
+  way left to read a saved list without going through Reddit's
+  third-party-app approval process.
 - **AI tagger:** `dghs-imgutils` (WD14) + `onnxruntime`, local inference only.
 - **Review/resolve UI:** `gradio`.
 - **Config:** `python-dotenv`.
