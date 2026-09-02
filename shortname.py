@@ -141,6 +141,50 @@ def remove_series_alias(variant: str, path: Path = SERIES_ALIASES_PATH) -> dict:
     return aliases
 
 
+def _alias_set(layout: dict, franchise_folder: str, variant: str, canonical: str) -> bool:
+    """In-memory core of save_character_alias: store variant -> canonical in
+    layout without persisting. Returns True iff the stored value changed.
+
+    Split out so an intent-level writer (promote_character / merge_character)
+    can compose an alias edit with a roster edit and reach disk through ONE
+    save_layout -- a half-applied promotion is a routing bug, and two writers
+    each saving for themselves is exactly how you get one.
+
+    Resolves `canonical` single-hop through the existing table, same rule as
+    save_character_alias, so a new variant pointed at something that is itself
+    an alias stores the real target instead of building a chain."""
+    table = layout.setdefault("character_aliases", {}).setdefault(franchise_folder, {})
+    _, existing = _lookup_character(table, canonical)
+    resolved = (existing if existing is not None else canonical).strip()
+    stored_variant = (variant or "").strip()
+    if table.get(stored_variant) == resolved:
+        return False
+    table[stored_variant] = resolved
+    return True
+
+
+def _alias_drop(layout: dict, franchise_folder: str, variant: str) -> bool:
+    """In-memory core of remove_character_alias: drop every key normalizing to
+    `variant`, prune an emptied franchise dict and then an emptied table.
+    Returns True iff anything changed; see remove_character_alias for why it
+    matches on normalize_name_key and why it removes ALL matches."""
+    table = (layout or {}).get("character_aliases")
+    franchise_table = (table or {}).get(franchise_folder)
+    if not franchise_table:
+        return False
+    target = normalize_name_key(variant)
+    doomed = [key for key in franchise_table if normalize_name_key(key) == target] if target else []
+    if not doomed:
+        return False
+    for key in doomed:
+        del franchise_table[key]
+    if not franchise_table:
+        del table[franchise_folder]
+        if not table:
+            layout.pop("character_aliases", None)
+    return True
+
+
 def save_character_alias(folder_name: str, variant: str, canonical: str,
                          layout: dict, path: Path = LAYOUT_PATH) -> dict:
     """Records a per-franchise character alias (variant -> canonical folder) and
@@ -157,10 +201,7 @@ def save_character_alias(folder_name: str, variant: str, canonical: str,
     variant at something that is itself an alias stores the real target instead
     of building a chain (same rule as save_series_alias). Writing goes through
     save_layout, so it is atomic (tmp file + os.replace)."""
-    table = layout.setdefault("character_aliases", {}).setdefault(folder_name, {})
-    _, existing = _lookup_character(table, canonical)
-    resolved = (existing if existing is not None else canonical).strip()
-    table[variant.strip()] = resolved
+    _alias_set(layout, folder_name, variant, canonical)
     save_layout(layout, path)
     return layout
 
@@ -188,21 +229,8 @@ def remove_character_alias(folder_name: str, variant: str, layout: dict,
     franchise dict (and then an emptied character_aliases table) is pruned, so
     retracting the only alias leaves layout.json as it was before it was
     recorded."""
-    table = (layout or {}).get("character_aliases")
-    franchise_table = (table or {}).get(folder_name)
-    if not franchise_table:
-        return layout
-    target = normalize_name_key(variant)
-    doomed = [key for key in franchise_table if normalize_name_key(key) == target] if target else []
-    if not doomed:
-        return layout
-    for key in doomed:
-        del franchise_table[key]
-    if not franchise_table:
-        del table[folder_name]
-        if not table:
-            layout.pop("character_aliases", None)
-    save_layout(layout, path)
+    if _alias_drop(layout, folder_name, variant):
+        save_layout(layout, path)
     return layout
 
 
@@ -295,21 +323,32 @@ def _remove_character_name(layout: dict, key: str, folder_name: str, name: str,
     (and then an emptied table) is pruned, so retracting the only answer leaves
     layout.json byte-identical to before it was given. A name that isn't there
     is a no-op that doesn't rewrite the file."""
+    if _character_name_drop(layout, key, folder_name, name):
+        save_layout(layout, path)
+    return layout
+
+
+def _character_name_drop(layout: dict, key: str, folder_name: str, name: str) -> bool:
+    """In-memory core of _remove_character_name -- same all-matches removal and
+    same pruning, but it neither saves nor returns the layout. Returns True iff
+    anything changed.
+
+    Exists so promote_character can clear a group-route pin as part of a larger
+    edit that reaches disk through ONE save_layout."""
     table = (layout or {}).get(key)
     names = (table or {}).get(folder_name)
     if not names:
-        return layout
+        return False
     survivors = [stored for stored in names if _stored_name_match([stored], name) is None]
     if len(survivors) == len(names):
-        return layout
+        return False
     if survivors:
         table[folder_name] = survivors
     else:
         del table[folder_name]
         if not table:
             layout.pop(key, None)
-    save_layout(layout, path)
-    return layout
+    return True
 
 
 def save_character_group_route(folder_name: str, name: str, layout: dict,
@@ -358,6 +397,156 @@ def is_alias_dismissed(folder_name: str, character_name: str, layout: dict) -> b
         _character_name_list(layout, CHARACTER_ALIAS_DISMISSED_KEY, folder_name),
         character_name,
     ) is not None
+
+
+# ---------------------------------------------------------------------------
+# Intent-level layout writers: "give this name its own folder" / "group this
+# name under another folder."
+#
+# resolve_character consults character_aliases BEFORE the roster, so a name
+# aliased to a group folder ("Sandrone" -> "Fatui") keeps resolving there even
+# once it IS in the roster. Promoting a name therefore takes TWO edits -- drop
+# the alias AND add the roster entry -- and grouping one takes the two inverse
+# edits. Every caller that spelled those out by hand had to get both right and
+# had to save twice; a run that applied one and not the other left layout.json
+# in a state that routes to neither the old folder nor the new one.
+#
+# These two functions are that pair of edits expressed as the single intent
+# they serve, applied in memory and persisted through ONE save_layout (or none
+# at all, when nothing changed).
+# ---------------------------------------------------------------------------
+
+
+def _roster_add(layout: dict, franchise_folder: str, name: str) -> bool:
+    """Append `name` to a franchise's `characters` roster in memory. Returns
+    True iff it was added.
+
+    Deduped with _stored_name_match, the same rule the answer tables use, so a
+    spacing/casing/order variant already on the roster is a no-op -- a roster
+    holding both "Kuki Shinobu" and "Shinobu Kuki" would be two folders'
+    worth of intent for one character. The name is stored as given (stripped),
+    never normalized: it becomes a real folder name on disk."""
+    stripped = (name or "").strip()
+    if not stripped:
+        return False
+    characters = layout["franchises"][franchise_folder].setdefault("characters", [])
+    if _stored_name_match(characters, stripped) is not None:
+        return False
+    characters.append(stripped)
+    return True
+
+
+def _roster_drop(layout: dict, franchise_folder: str, name: str) -> bool:
+    """Drop every roster entry `name` matches, in memory. Returns True iff
+    anything was dropped.
+
+    Removes ALL matches rather than the first, mirroring _remove_character_name
+    and for the same reason: a hand-edited roster can hold two spellings of one
+    character, and leaving the survivor keeps it resolving after a 'removal'.
+    An emptied roster stays as an empty list -- unlike the optional answer
+    tables, `characters` is part of the franchise's declared shape and every
+    reader expects the key to be there."""
+    franchise_def = ((layout or {}).get("franchises") or {}).get(franchise_folder)
+    if not isinstance(franchise_def, dict):
+        return False
+    characters = franchise_def.get("characters")
+    if not characters:
+        return False
+    survivors = [stored for stored in characters if _stored_name_match([stored], name) is None]
+    if len(survivors) == len(characters):
+        return False
+    franchise_def["characters"] = survivors
+    return True
+
+
+def _resolved_franchise_key(layout: dict, franchise_folder: str):
+    """(configured_key, franchise_def) for a franchise FOLDER name, raising
+    ValueError when it isn't configured.
+
+    Every write below goes through the CONFIGURED key rather than the caller's
+    label: character_aliases and character_group_route are keyed by folder name
+    with no case-insensitive read path of their own, so writing under a
+    caller's casing would create a second, divergent table that nothing ever
+    reads."""
+    matched, franchise_def = lookup_ci((layout or {}).get("franchises") or {}, franchise_folder)
+    if matched is None:
+        raise ValueError(f"Unknown franchise folder: {franchise_folder!r}")
+    return matched, franchise_def
+
+
+def promote_character(franchise_folder: str, name: str, layout: dict,
+                      path: Path = LAYOUT_PATH) -> dict:
+    """Give `name` its own character subfolder under `franchise_folder`, and
+    return the updated layout. The "unhook" half of the pair.
+
+    Three edits, because three things can currently be sending the name
+    somewhere else, and any one left behind wins over the new folder:
+      - the character alias that points it at a group folder, dropped (it is
+        consulted BEFORE the roster, so adding the roster entry alone changes
+        nothing at all);
+      - the roster entry itself, added (this is what resolve_character matches
+        and what archive.py interpolates into the path);
+      - any `character_group_route` pin for the name, cleared -- archive.py
+        honours a pin ahead of a roster match, so a stale one would silently
+        keep filing the promoted character into the group folder. Promoting is
+        the more recent and more specific instruction, so it wins.
+    The dismissal table is deliberately NOT touched: it is review-side only,
+    has no routing effect, and "stop asking me about this name" stays true.
+
+    Raises ValueError for an unconfigured franchise -- creating a roster under
+    a folder that doesn't exist would flag every entry that reached it, with no
+    hint of why. Writes at most once, and not at all when all three edits are
+    already satisfied, so re-running it can't churn layout.json's mtime or
+    reorder its hand-curated keys."""
+    folder, _ = _resolved_franchise_key(layout, franchise_folder)
+
+    changed = _alias_drop(layout, folder, name)
+    changed |= _roster_add(layout, folder, name)
+    changed |= _character_name_drop(layout, CHARACTER_GROUP_ROUTE_KEY, folder, name)
+
+    if changed:
+        save_layout(layout, path)
+    return layout
+
+
+def merge_character(franchise_folder: str, name: str, into: str, layout: dict,
+                    path: Path = LAYOUT_PATH) -> dict:
+    """File `name` under the existing `into` folder from now on, and return the
+    updated layout. The "hook" half of the pair, and the exact inverse of
+    promote_character -- this is the Saber/Artoria (or Sandrone/Fatui)
+    consolidation primitive.
+
+    `into` must ALREADY be on the franchise's roster. An alias pointing at a
+    folder that doesn't exist resolves to nothing, so the entry flags
+    needs_folder at archive time -- looking, from the review UI, exactly like
+    an alias that was never recorded. Refusing up front is the only way that
+    failure is visible at the moment it is caused.
+
+    The alias value stored is the CONFIGURED roster spelling, never the
+    caller's casing, so the path built from it points at the real folder on
+    disk. Both edits land in one save_layout, and an already-satisfied merge
+    writes nothing."""
+    folder, franchise_def = _resolved_franchise_key(layout, franchise_folder)
+
+    roster = (franchise_def or {}).get("characters") or []
+    resolved_into, _ = _lookup_character(roster, into)
+    if resolved_into is None:
+        raise ValueError(
+            f"{into!r} is not a character folder in {folder!r} -- an alias "
+            "pointing at a folder that doesn't exist flags at archive time"
+        )
+    if _stored_name_match([resolved_into], name) is not None:
+        raise ValueError(
+            f"Cannot merge {name!r} into itself ({resolved_into!r}) -- that "
+            "would drop the roster entry the alias points at"
+        )
+
+    changed = _roster_drop(layout, folder, name)
+    changed |= _alias_set(layout, folder, name, resolved_into)
+
+    if changed:
+        save_layout(layout, path)
+    return layout
 
 
 def resolve_franchise(tag_name: str, layout: dict, series_aliases: Optional[dict] = None):

@@ -137,3 +137,4 @@ docs/PROJECT_CONTEXT.md
 scripts/*
 !scripts/migrations/
 authtest.py
+cookietest.py

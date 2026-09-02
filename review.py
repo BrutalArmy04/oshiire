@@ -8,12 +8,20 @@ import copy
 import os
 import re
 import warnings
+from functools import partial
 from pathlib import Path
 
 import gradio as gr
 from dotenv import load_dotenv
 from starlette.exceptions import StarletteDeprecationWarning
 
+# The reconcile engine, imported for its FUNCTIONS -- build_plan/apply_plan --
+# never by shelling out to its CLI. sync.py itself imports nothing that talks
+# to the network (archive, hash_index, manifest, shortname), so pulling it in
+# here does not breach the UI's no-network invariant; and its dry-run path
+# writes nothing at all, which is what makes Scan safe to run from a button.
+import sync
+from hash_index import DEFAULT_DB
 from manifest import display_permalink, load_manifest, save_manifest
 from tagger import (
     normalize_subreddit,
@@ -40,6 +48,9 @@ from shortname import (
     load_series_aliases,
     load_wallpaper_rules,
     match_shortname,
+    merge_character,
+    normalize_name_key,
+    promote_character,
     resolve_character,
     save_character_alias,
     save_character_alias_dismissal,
@@ -1313,6 +1324,417 @@ def on_settings_delete(selected):
     )
 
 
+# ---------------------------------------------------------------------------
+# Settings tab: Sync -- reconcile the manifest with an archive the user has
+# reorganised by hand, and show sync.py's layout-health audit.
+#
+# The engine is sync.py and it is called as a LIBRARY (build_plan / apply_plan),
+# never as a subprocess: the plan object carries the buckets, the untracked
+# list and the audit findings that this tab renders, and a CLI would hand back
+# only the printed report.
+#
+# The split this tab exists to make obvious: Scan is build_plan, which reads
+# file NAMES and writes nothing whatsoever; Apply is apply_plan, which rewrites
+# archive_path for the MOVED_OK bucket only and re-keys the index alongside.
+# Neither ever moves, copies or deletes a file -- moving files stays something
+# the user does in their file browser.
+#
+# Both run against review.py's OWN in-memory manifest, not a fresh load. That
+# is deliberate: apply_plan commits with one save_manifest over the dict it was
+# given, so handing it a second copy would write back a manifest missing every
+# decision the Review tab has made this session.
+# ---------------------------------------------------------------------------
+
+# Module-level so a test can point it at a sandbox. The db is only ever
+# re-keyed, never created -- move_indexed_file returns False for an absent one.
+sync_db_path = DEFAULT_DB
+
+# The last Scan's SyncPlan, or None. This is the whole gate on Apply: a plan is
+# the only thing that says which entries are unambiguously repairable, and one
+# built before the user's last round of file moves would rewrite archive_path
+# to a location that is no longer true. Cleared again after every Apply.
+sync_plan = None
+
+
+def _sync_counts_md(plan):
+    """The bucket table, in sync.py's own report order and with its own labels
+    -- the CLI and this tab must never disagree about what a bucket is called."""
+    counts = plan.counts()
+    lines = ["| | |", "|---|---:|"]
+    for bucket in sync.BUCKET_ORDER:
+        lines.append(f"| {sync.BUCKET_LABELS[bucket]} | {counts.get(bucket, 0):,} |")
+    lines.append(f"| {sync.UNTRACKED_LABEL} | {len(plan.untracked):,} |")
+    return "\n".join(lines)
+
+
+def _sync_report_md(plan):
+    """The full dry-run report as markdown: counts, every repairable move, every
+    item needing a human, the untracked count and the layout audit.
+
+    The MOVED_OK list is shown in FULL rather than truncated. It is the exact
+    set Apply is about to rewrite, and a reviewer who can only see the first
+    ten of them is approving the rest blind.
+    """
+    index_note = "" if Path(sync_db_path).exists() else "  _(not built)_"
+    parts = [
+        f"**Archive:** `{archive_dir}`",
+        f"**Index:** `{sync_db_path}`{index_note}",
+    ]
+    if plan.scope:
+        parts.append(f"**Scope:** `{plan.scope}/`")
+    parts.append(f"**Images on disk:** {plan.disk_files:,}")
+    parts.append("")
+    parts.append("#### Archived manifest entries")
+    parts.append(_sync_counts_md(plan))
+
+    moved_ok = plan.by_bucket(sync.MOVED_OK)
+    parts.append("")
+    parts.append(f"#### Repairable moves ({len(moved_ok)})")
+    if moved_ok:
+        parts.append("Apply rewrites these, and only these.")
+        parts.append("")
+        for item in moved_ok:
+            parts.append(f"- `{item.key}`  \n  `{item.old_rel}`  \n  → `{item.new_rel}`")
+    else:
+        parts.append("_None._")
+
+    attention = [item for bucket in sync.ATTENTION_BUCKETS for item in plan.by_bucket(bucket)]
+    parts.append("")
+    parts.append(f"#### Needs your decision ({len(attention)})")
+    if attention:
+        parts.append("Never applied automatically — each of these is ambiguous in "
+                     "a way no rule can settle.")
+        parts.append("")
+        for item in attention:
+            line = f"- **[{sync.BUCKET_LABELS[item.bucket]}]** `{item.key}` (`{item.old_rel}`)"
+            if item.detail:
+                line += f"  \n  {item.detail}"
+            parts.append(line)
+    else:
+        parts.append("_None._")
+
+    # Count only, deliberately: untracked files predate oshiire and are none of
+    # its business. Listing thousands of them would bury the two sections above.
+    parts.append("")
+    parts.append(f"#### Untracked files ({len(plan.untracked):,})")
+    parts.append("Images under the archive that oshiire did not put there. "
+                 "Nothing here is ever touched.")
+
+    parts.append("")
+    parts.append(f"#### layout.json health ({len(plan.audit)} finding(s))")
+    if plan.audit:
+        parts.append("Advisory only — nothing is ever written for these.")
+        parts.append("")
+        for finding in plan.audit:
+            parts.append(
+                f"- **[{finding.kind}]** {finding.franchise}: "
+                f"`{finding.alias}` → `{finding.target}`  \n  {finding.detail}"
+            )
+    else:
+        parts.append("_No findings._")
+
+    return "\n".join(parts)
+
+
+def _sync_render(report="", status="", enable_apply=False):
+    """Full repaint of the Sync panel as {component: value} -- same discipline
+    as _settings_render: every component present on every branch, addressed by
+    component object rather than position."""
+    return {
+        sync_report_md: report,
+        sync_status_md: status,
+        sync_apply_btn: gr.update(interactive=enable_apply),
+    }
+
+
+def _sync_tab_open():
+    """Opening the tab clears any earlier plan, so Apply starts disabled.
+
+    A plan is a statement about the archive at the moment it was built, and the
+    user leaves this tab precisely in order to go and move files. Coming back to
+    a live Apply button holding a stale plan is the one way this tab could
+    rewrite an archive_path to somewhere the file no longer is."""
+    global sync_plan
+    sync_plan = None
+    return _sync_render(
+        status="**Scan** reads the archive and writes nothing at all. Only "
+               "**Apply reconcile** writes, and only to `manifest.json` and the "
+               "pHash index — no file is ever moved, copied or deleted from here.",
+    )
+
+
+def on_sync_scan(scope_text):
+    """Dry-run the reconcile over the whole archive (or one scope prefix)."""
+    global sync_plan
+    if archive_dir is None:
+        sync_plan = None
+        return _sync_render(
+            status="⚠️ `ARCHIVE_DIR` is not set in `.env`, so there is no "
+                   "archive to scan.",
+        )
+
+    scope = (scope_text or "").strip().strip("/") or None
+    sync_plan = sync.build_plan(manifest, layout, archive_dir, scope=scope)
+
+    repairable = len(sync_plan.by_bucket(sync.MOVED_OK))
+    attention = sum(len(sync_plan.by_bucket(bucket)) for bucket in sync.ATTENTION_BUCKETS)
+    if repairable:
+        status = (f"✅ Scan complete — nothing was written. **{repairable}** "
+                  f"move(s) can be repaired; press **Apply reconcile** to record them.")
+    else:
+        status = ("✅ Scan complete — nothing was written, and there is "
+                  "nothing to repair.")
+    if attention:
+        status += f" **{attention}** item(s) need your decision (listed below)."
+    return _sync_render(
+        report=_sync_report_md(sync_plan), status=status, enable_apply=bool(repairable),
+    )
+
+
+def on_sync_apply():
+    """Rewrite archive_path for the MOVED_OK bucket, and nothing else."""
+    global sync_plan
+    if sync_plan is None:
+        return _sync_render(
+            status="⚠️ Run **Scan** first — Apply only ever acts on the "
+                   "plan a scan produced.",
+        )
+
+    plan = sync_plan
+    moved_ok = plan.by_bucket(sync.MOVED_OK)
+    result = sync.apply_plan(plan, manifest, sync_db_path)
+    # The plan described the archive as it was BEFORE this write, so it is spent
+    # either way -- re-scanning is the only way to get a true one.
+    sync_plan = None
+
+    if not result.moved:
+        return _sync_render(status="Nothing to apply — the plan had no repairable moves.")
+
+    parts = [f"#### Applied — {result.moved} archive_path(s) rewritten", ""]
+    for item in moved_ok:
+        parts.append(f"- `{item.key}`  \n  `{item.old_rel}`  \n  → `{item.new_rel}`")
+    parts.append("")
+    parts.append(
+        f"Index re-keyed for **{result.index_updated}**, missed **{result.index_missed}**."
+    )
+    if result.index_missed:
+        # The index is a rebuildable cache and `hash_index.py build` is its
+        # source of truth -- but a file missing from it is compared against
+        # NOTHING, so this hint is not optional decoration.
+        parts.append("")
+        parts.append("⚠️ Some rows were not in the index. Run "
+                     "`python hash_index.py build` to fully resync it.")
+
+    status = ("✅ Manifest written. No file was moved, copied or deleted. "
+              "Scan again to see the archive's new state.")
+    return _sync_render(report="\n".join(parts), status=status, enable_apply=False)
+
+
+# ---------------------------------------------------------------------------
+# Settings tab: Character Folders -- promote / merge, in outcome language.
+#
+# Two engine calls, and no raw JSON editing anywhere:
+#   promote_character(franchise, name, layout)        "give it its own folder"
+#   merge_character(franchise, name, into, layout)    "group it under <folder>"
+# Both are atomic and no-op-safe, and both are described here by WHAT HAPPENS TO
+# THE FILES. The words "alias" and "roster" never reach the screen: a name with
+# a `characters` entry is one with its **own folder**, a name with a
+# `character_aliases` entry is one **grouped in** another folder, and those two
+# phrases are the entire model the user needs.
+#
+# What this tab does NOT do is move a single file. layout.json decides where
+# FUTURE images are filed; images already archived stay exactly where they are,
+# which is why every edit ends with a count of how many of them the user still
+# has to drag across in their own file browser (and then reconcile in the Sync
+# tab). Nothing here moves, copies or deletes anything under ARCHIVE_DIR.
+# ---------------------------------------------------------------------------
+
+# Bumped by every promote/merge and fed to the @gr.render block below as an
+# input, because the per-row controls are dynamic: the rows ARE the data, so a
+# write has to rebuild them rather than repaint a fixed set of components. The
+# static parts of the panel (dropdown, counts, status) still use the ordinary
+# render-dict pattern.
+character_tick = 0
+
+
+def _nested_franchises():
+    """Franchise folders this tab can edit: nested style AND a non-empty roster.
+
+    Both conditions matter. For a flat franchise the character name never
+    reaches the path at all, so promoting or grouping one would be an edit with
+    no observable effect; and a nested franchise with an empty roster has no
+    folders to group anything INTO, which is the one thing merge_character
+    refuses outright."""
+    franchises = layout.get("franchises") or {}
+    return sorted(
+        folder
+        for folder, definition in franchises.items()
+        if isinstance(definition, dict)
+        and definition.get("style") == "nested"
+        and (definition.get("characters") or [])
+    )
+
+
+def _character_rows(franchise):
+    """(own_folder, grouped) for one franchise, as the two lists the tab shows.
+
+    `own_folder` is the roster, sorted for the screen only -- layout.json's own
+    order is hand-curated and is never rewritten from here. `grouped` is
+    (name, folder it files into) for each character alias.
+    """
+    definition = (layout.get("franchises") or {}).get(franchise)
+    if not isinstance(definition, dict):
+        return [], []
+    own = sorted((definition.get("characters") or []), key=lambda name: str(name).casefold())
+    table = (layout.get("character_aliases") or {}).get(franchise) or {}
+    grouped = sorted(
+        ((name, str(target)) for name, target in table.items()),
+        key=lambda row: row[0].casefold(),
+    )
+    return own, grouped
+
+
+def _merge_targets(franchise, name):
+    """The folders `name` may be grouped under: every OTHER folder in this
+    franchise.
+
+    Excluding the row's own name is not cosmetic. merge_character raises
+    ValueError on a self-merge -- it would drop the very roster entry the new
+    alias points at -- so leaving the name in its own dropdown makes an
+    exception reachable by a plain double-click. Matching is normalize_name_key
+    so a respelling of the same name ("Hu Tao" vs "Hutao") is excluded too."""
+    own, _ = _character_rows(franchise)
+    own_key = normalize_name_key(name)
+    return [other for other in own if normalize_name_key(other) != own_key]
+
+
+def _archived_count_under(name, folder_rel):
+    """How many ARCHIVED entries tagged `name` still sit under `folder_rel`.
+
+    Read-only, and the only thing this tab ever computes from the manifest.
+    `_under` is sync.py's own comparison (case-insensitive, POSIX, "the folder
+    or inside it"), reused rather than re-derived so this count and the Sync
+    tab's buckets can never disagree about what "under a folder" means."""
+    target = normalize_name_key(name)
+    if not target:
+        return 0
+    count = 0
+    for entry in manifest.values():
+        if not isinstance(entry, dict) or entry.get("status") != "archived":
+            continue
+        rel = entry.get("archive_path")
+        if not rel or not sync._under(rel, folder_rel):
+            continue
+        if any(normalize_name_key(tagged) == target
+               for tagged in (entry.get("character_guess") or [])):
+            count += 1
+    return count
+
+
+def _still_to_move_md(name, old_rel, new_rel):
+    """The one line that closes the loop after an edit: layout.json now files
+    FUTURE images somewhere new, and these already-archived ones are still in
+    the old folder until the user drags them across.
+
+    Count only. Moving them from here would be a write inside ARCHIVE_DIR,
+    which this process does not do."""
+    count = _archived_count_under(name, old_rel)
+    if not count:
+        return f"No archived images are still filed under `{old_rel}/`."
+    return (f"**{count}** archived image(s) for {name} are still in `{old_rel}/`. "
+            f"Move them into `{new_rel}/` in your file browser, then open the "
+            f"**Sync** tab.")
+
+
+def _character_counts_md(franchise):
+    if not franchise:
+        return f"**{len(_nested_franchises())}** series file into character folders."
+    own, grouped = _character_rows(franchise)
+    return (f"**{franchise}** — {len(own)} character folder(s), "
+            f"{len(grouped)} name(s) grouped into one of them.")
+
+
+def _character_render(franchise, status="", bump=False):
+    """Full repaint of the Character Folders panel as {component: value}.
+
+    `bump` advances the tick that re-runs the @gr.render row block; only an
+    edit needs it, since selecting a franchise already re-runs that block off
+    the dropdown's own input event."""
+    global character_tick
+    if bump:
+        character_tick += 1
+    return {
+        char_franchise_dropdown: gr.update(choices=_nested_franchises(), value=franchise),
+        char_count_md: _character_counts_md(franchise),
+        char_status_md: status,
+        char_tick: character_tick,
+    }
+
+
+def _character_tab_open(franchise):
+    """Repopulate on tab open, KEEPING the current selection -- the row block
+    below is triggered by the same tab-select event and reads the dropdown's
+    value, so resetting it here would leave the two showing different
+    franchises for one frame."""
+    return _character_render(franchise if franchise in _nested_franchises() else None)
+
+
+def on_character_select(franchise):
+    return _character_render(franchise)
+
+
+def on_character_promote(franchise, name, old_folder):
+    """Give `name` its own folder. `old_folder` is the folder it is grouped in
+    today, and is passed from the row rather than re-derived -- the alias is
+    gone by the time the status line is built."""
+    try:
+        promote_character(franchise, name, layout)
+    except ValueError as exc:
+        return _character_render(franchise, status=f"⚠️ {exc}", bump=True)
+
+    definition = (layout.get("franchises") or {}).get(franchise) or {}
+    # The roster spelling as configured, not the caller's casing -- it is what
+    # the folder on disk is called.
+    new_folder = resolve_character(franchise, definition, name, layout) or name
+    note = _still_to_move_md(name, f"{franchise}/{old_folder}", f"{franchise}/{new_folder}")
+    return _character_render(
+        franchise,
+        status=(f"✅ **{name}** now has its own folder, `{franchise}/{new_folder}/`. "
+                f"{note}"),
+        bump=True,
+    )
+
+
+def on_character_merge(franchise, name, into):
+    """Group `name` under the existing `into` folder.
+
+    `into` empty is a no-op with a message rather than a call: merge_character
+    would raise ValueError for it, and an exception is not how a UI says "you
+    did not pick anything"."""
+    if not into:
+        return _character_render(
+            franchise,
+            status=f"⚠️ Pick a folder to group **{name}** under first.",
+        )
+    try:
+        merge_character(franchise, name, into, layout)
+    except ValueError as exc:
+        return _character_render(franchise, status=f"⚠️ {exc}", bump=True)
+
+    # merge_character stores the CONFIGURED spelling of the target under the
+    # name as given, so reading the alias back is how the real folder name is
+    # recovered without re-deriving the lookup.
+    table = (layout.get("character_aliases") or {}).get(franchise) or {}
+    new_folder = table.get((name or "").strip()) or into
+    note = _still_to_move_md(name, f"{franchise}/{name}", f"{franchise}/{new_folder}")
+    return _character_render(
+        franchise,
+        status=(f"✅ **{name}** is now grouped in `{franchise}/{new_folder}/`. "
+                f"{note}"),
+        bump=True,
+    )
+
+
 with gr.Blocks(title="Oshiire review", analytics_enabled=False) as demo:
   with gr.Tabs():
    # Indentation inside the tabs is deliberately shallow (1 space per level):
@@ -1536,6 +1958,125 @@ with gr.Blocks(title="Oshiire review", analytics_enabled=False) as demo:
         fn=on_settings_delete, inputs=[settings_dropdown], outputs=settings_outputs
     )
     settings_add_btn.click(fn=on_settings_add, outputs=settings_outputs)
+
+   with gr.Tab("Sync") as sync_tab:
+    gr.Markdown(
+        "### Sync\n"
+        "Tells oshiire about images you have moved around in the archive "
+        "yourself. **Scan** looks and writes nothing; **Apply reconcile** "
+        "records the moves it is sure about in `manifest.json` and the "
+        "duplicate-detection index. Neither one moves, copies or deletes a "
+        "file — that stays your file browser's job."
+    )
+    sync_scope_box = gr.Textbox(
+        label="Only look at (optional)", max_lines=1, placeholder="Genshin Impact",
+        info="A folder prefix inside the archive. Leave empty to scan all of it.",
+    )
+    with gr.Row():
+        sync_scan_btn = gr.Button("Scan", variant="primary")
+        # Disabled until a Scan has run: Apply acts on the PLAN a scan
+        # produced, never on the archive directly, so without one there is
+        # literally nothing for it to do.
+        sync_apply_btn = gr.Button("Apply reconcile", interactive=False)
+    sync_status_md = gr.Markdown()
+    sync_report_md = gr.Markdown()
+
+    # Same registration-list discipline as settings_outputs: declares which
+    # components a Sync event may repaint, never an order the handlers match.
+    sync_outputs = [sync_report_md, sync_status_md, sync_apply_btn]
+
+    # Populated when the tab is OPENED, not by a second demo.load. The archive
+    # changes underneath this panel constantly -- that is the whole premise of
+    # the tab -- so a once-at-launch population would be stale by definition.
+    sync_tab.select(fn=_sync_tab_open, outputs=sync_outputs)
+    sync_scan_btn.click(fn=on_sync_scan, inputs=[sync_scope_box], outputs=sync_outputs)
+    sync_apply_btn.click(fn=on_sync_apply, outputs=sync_outputs)
+
+   with gr.Tab("Character Folders") as char_tab:
+    gr.Markdown(
+        "### Character folders\n"
+        "Which characters get their own folder in a series, and which are "
+        "grouped in with another one. Changes here decide where **future** "
+        "images are filed — images already in the archive stay where they "
+        "are, and each change tells you how many of them you still need to "
+        "move yourself."
+    )
+    char_franchise_dropdown = gr.Dropdown(
+        choices=_nested_franchises(), value=None, label="Series", filterable=True,
+        # Seeded here as well as by the tab-select event, and custom values
+        # allowed, for the same reason settings_dropdown does it: gr.update
+        # only repaints the client, so a value the server-side component was
+        # not built with is rejected on submit.
+        allow_custom_value=True,
+        info="Type to filter. Only series filed into character subfolders appear here.",
+    )
+    char_count_md = gr.Markdown()
+    char_status_md = gr.Markdown()
+    # Advanced by every promote/merge; an input to the row block below, which
+    # is the only way a write can rebuild rows that are themselves the data.
+    char_tick = gr.State(0)
+
+    char_outputs = [char_franchise_dropdown, char_count_md, char_status_md, char_tick]
+
+    @gr.render(
+        inputs=[char_franchise_dropdown, char_tick],
+        # Explicit triggers, so this does NOT also fire at page load -- same
+        # rule as settings_tab.select: the panel is filled in when its tab is
+        # opened, never on the startup path.
+        triggers=[char_tab.select, char_franchise_dropdown.input, char_tick.change],
+    )
+    def _character_rows_ui(franchise, _tick):
+        """The per-row controls. Dynamic because the rows ARE the layout: one
+        row per character folder and one per grouped name, each wired to the
+        engine call for that specific name."""
+        if not franchise or franchise not in _nested_franchises():
+            gr.Markdown("_Pick a series above._")
+            return
+
+        own, grouped = _character_rows(franchise)
+
+        gr.Markdown("#### Own folder")
+        gr.Markdown(
+            "Each of these files into its own folder. Pick another folder and "
+            "press Apply to group it in there instead."
+        )
+        for name in own:
+            with gr.Row(equal_height=True):
+                gr.Markdown(f"**{name}**")
+                target = gr.Dropdown(
+                    # The row's own name is excluded, so merge_character's
+                    # self-merge ValueError is unreachable from the UI.
+                    choices=_merge_targets(franchise, name), value=None,
+                    label="Group under…", filterable=True, allow_custom_value=True,
+                    show_label=False, container=False,
+                )
+                gr.Button("Apply", size="sm").click(
+                    fn=partial(on_character_merge, franchise, name),
+                    inputs=[target], outputs=char_outputs,
+                )
+
+        gr.Markdown("#### Grouped in another folder")
+        if not grouped:
+            gr.Markdown("_Nothing is grouped in this series._")
+        for name, folder in grouped:
+            with gr.Row(equal_height=True):
+                gr.Markdown(f"**{name}** — grouped in `{folder}/`")
+                gr.Button("Give it its own folder", size="sm").click(
+                    # `folder` is captured now because the alias that names it
+                    # is gone by the time the status line is built.
+                    fn=partial(on_character_promote, franchise, name, folder),
+                    outputs=char_outputs,
+                )
+
+    char_tab.select(
+        fn=_character_tab_open, inputs=[char_franchise_dropdown], outputs=char_outputs
+    )
+    # .input(), not .change(): a handler that re-selects the same franchise
+    # would otherwise re-render with an empty status and swallow its own
+    # confirmation message (see settings_dropdown).
+    char_franchise_dropdown.input(
+        fn=on_character_select, inputs=[char_franchise_dropdown], outputs=char_outputs
+    )
 
 
 if __name__ == "__main__":

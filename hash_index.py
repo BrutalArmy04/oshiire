@@ -216,6 +216,105 @@ def record_indexed_file(
     return True
 
 
+def move_indexed_file(db_path: Path, old_rel: str, new_rel: str) -> bool:
+    """Re-point ONE existing row at a new rel_path. Returns True when the index
+    changed.
+
+    For sync.py: when an archived image is filed into a different folder by
+    hand, the artwork is unchanged but its key here is a path that no longer
+    exists -- and a row keyed on a vanished path is compared against nothing.
+    Re-keying costs one UPDATE and never re-reads the image; the alternative is
+    re-walking the whole archive to relearn the same fact.
+
+    If `new_rel` is already present, the UPDATE would violate the primary key,
+    so the OLD row is deleted instead. The existing new_rel row was written by
+    a `build` sweep (or an archive run) that already saw the file where it now
+    lives, so it is the one reflecting reality; dropping the stale key is the
+    point of the call either way.
+
+    Best-effort in exactly record_indexed_file's sense: never CREATES the
+    index, returns False when the db is absent or `old_rel` isn't in it, and
+    warns instead of raising on a SQLite error -- callers reach this after
+    files have already moved, and nothing here may fail their run.
+    """
+    if not db_path.exists() or not old_rel or not new_rel or old_rel == new_rel:
+        return False
+    conn = sqlite3.connect(db_path)
+    try:
+        if conn.execute(
+            "SELECT 1 FROM images WHERE rel_path = ?", (old_rel,)
+        ).fetchone() is None:
+            return False
+        taken = conn.execute(
+            "SELECT 1 FROM images WHERE rel_path = ?", (new_rel,)
+        ).fetchone() is not None
+        if taken:
+            conn.execute("DELETE FROM images WHERE rel_path = ?", (old_rel,))
+        else:
+            conn.execute(
+                "UPDATE images SET rel_path = ? WHERE rel_path = ?", (new_rel, old_rel)
+            )
+        conn.commit()
+    except sqlite3.Error as exc:
+        print(
+            f"  warning: could not re-key {old_rel} -> {new_rel} in {db_path}: {exc}",
+            file=sys.stderr,
+        )
+        return False
+    finally:
+        conn.close()
+    return True
+
+
+def remove_indexed_file(db_path: Path, rel_path: str) -> bool:
+    """Drop ONE row from an EXISTING index. Returns True when a row was removed.
+
+    The counterpart to record_indexed_file, for a file that is gone from
+    ARCHIVE_DIR: its row would otherwise keep answering lookups with a path
+    nothing can open, which reads as a duplicate the user cannot act on.
+
+    Same best-effort contract as the two above -- never creates the index,
+    False when the db or the row is absent, warn-not-raise on SQLite errors.
+    Nothing calls this automatically: sync.py REPORTS vanished files and
+    leaves the decision to the user, since a file missing from the walk is
+    just as likely an unmounted drive as a deletion.
+    """
+    if not db_path.exists() or not rel_path:
+        return False
+    conn = sqlite3.connect(db_path)
+    try:
+        cur = conn.execute("DELETE FROM images WHERE rel_path = ?", (rel_path,))
+        conn.commit()
+        removed = cur.rowcount > 0
+    except sqlite3.Error as exc:
+        print(f"  warning: could not remove {rel_path} from {db_path}: {exc}", file=sys.stderr)
+        return False
+    finally:
+        conn.close()
+    return removed
+
+
+def get_indexed_rel_paths(db_path: Path) -> set[str]:
+    """Every rel_path the index currently holds, or an empty set when there is
+    no index (or it cannot be read).
+
+    An empty set is deliberately indistinguishable from "no index": every
+    caller treats an unindexed path as "compare from the manifest's own cached
+    hash instead", which is exactly the right behaviour for a user who has
+    never run `build`.
+    """
+    if not db_path.exists():
+        return set()
+    conn = sqlite3.connect(db_path)
+    try:
+        return {row[0] for row in conn.execute("SELECT rel_path FROM images")}
+    except sqlite3.Error as exc:
+        print(f"  warning: could not read {db_path}: {exc}", file=sys.stderr)
+        return set()
+    finally:
+        conn.close()
+
+
 def load_existing(conn: sqlite3.Connection) -> dict[str, tuple[int, float]]:
     """Preload {rel_path: (size, mtime)} for O(1) resume checks during the walk."""
     return {
