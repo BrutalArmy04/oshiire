@@ -152,18 +152,26 @@ Built since the first release:
   reject.
 - **Read-only history browser** (`history.py`) for looking up past decisions.
 - **In-app Settings tab.** The review UI is now tabbed, so config that used to
-  mean hand-editing JSON is editable from the browser. The first panel edits
-  `subreddit_map.json` — add, rename, or retract a subreddit→franchise/character
-  mapping — and holds the same line as the rest of the UI: it reads and writes
-  the file live (no cache), preserves the entries and comments it didn't touch,
-  and a delete or rename is always an explicit click, never a silent side effect.
-- **Live character/folder validation in review.** As you edit a character name,
-  the review UI checks it against the tagged franchise's folders and, for a name
-  that doesn't resolve, flags it inline with a closest-match suggestion ("did you
-  mean *Shinobu*?") — so a mistag surfaces on the entry itself, not later at
-  dry-run time. It's advisory: it changes no routing, uses the same resolver the
-  archiver routes with, and stays quiet on the cases where a non-match is
-  expected (crossover, OC, a group shot, or a multi-franchise entry).
+  mean hand-editing JSON is editable from the browser. Sub-tabs cover the whole
+  config surface — the subreddit→franchise/character map, franchise aliases,
+  character aliases, series aliases, and the shortname file — each able to add,
+  rename, or retract an entry, and each holding the same line as the rest of the
+  UI: it reads and writes its file live (no cache), preserves the entries and
+  comments it didn't touch, and a delete or rename is always an explicit click,
+  never a silent side effect.
+- **Live character and franchise validation in review.** As you edit an entry,
+  the review UI checks each name against what's configured and flags a mismatch
+  inline with a closest-match suggestion — a character that doesn't match a
+  folder in its franchise ("did you mean *Shinobu*?") and a franchise that
+  doesn't resolve at all ("did you mean *Pokemon*?") — so a mistag surfaces on
+  the entry itself, not later at dry-run time. Both are advisory: they change no
+  routing and use the same resolvers the archiver routes with. The character
+  check stays quiet where a non-match is expected (crossover, OC, a group shot);
+  the franchise check runs on every franchise you type, including each one on a
+  crossover.
+- **`.sh` launchers for Linux/macOS**, mirroring the Windows set one stage for
+  one stage. The two now live side by side in `launchers-bat/` and
+  `launchers-sh/`.
 
 ## Known limitations
 
@@ -179,20 +187,15 @@ Built since the first release:
 - The owned/uncertain/new dedup thresholds ship as constants measured against
   one dense archive. A sparser archive has a different noise floor and should
   re-measure with `calibrate.py` rather than inherit them.
-- Windows-first: the launchers are `.bat` files in `launchers/`, no `.sh`
-  equivalents yet.
 
 ## Roadmap
 
-- **The rest of the Settings panels.** Franchise-alias, character-alias,
-  series-alias, and shortname-file editors, so the whole config surface is
-  editable in-app instead of by hand. (The subreddit-map editor is the first.)
 - **Promoting a series out of the shortname folder.** Give a shortname-filed
   series its own normal folder once it's earned one — alongside a plain "create
   a new series" — so a growing series doesn't stay wedged in the shared
   shortname space.
 - **Driving the pipeline from the UI.** Turn the ingest / backfill / resolve /
-  archive stages, currently run from the CLI and `.bat` launchers, into buttons
+  archive stages, currently run from the CLI and the launcher scripts, into buttons
   so the whole loop runs without a terminal.
 - **A second Reddit account.** Read a second saved feed into the same archive,
   deduplicated against the one namespace the manifest, tombstones, and hash
