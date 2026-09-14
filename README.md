@@ -157,6 +157,13 @@ Built since the first release:
   mapping — and holds the same line as the rest of the UI: it reads and writes
   the file live (no cache), preserves the entries and comments it didn't touch,
   and a delete or rename is always an explicit click, never a silent side effect.
+- **Live character/folder validation in review.** As you edit a character name,
+  the review UI checks it against the tagged franchise's folders and, for a name
+  that doesn't resolve, flags it inline with a closest-match suggestion ("did you
+  mean *Shinobu*?") — so a mistag surfaces on the entry itself, not later at
+  dry-run time. It's advisory: it changes no routing, uses the same resolver the
+  archiver routes with, and stays quiet on the cases where a non-match is
+  expected (crossover, OC, a group shot, or a multi-franchise entry).
 
 ## Known limitations
 
@@ -177,10 +184,6 @@ Built since the first release:
 
 ## Roadmap
 
-- **Smarter unresolved-name handling in review.** When a tagged character
-  doesn't match a folder, suggest the closest existing one ("did you mean Shinobu?") 
-  and flag it inline as you type, rather than only when you press Accept.
-  
 - **The rest of the Settings panels.** Franchise-alias, character-alias,
   series-alias, and shortname-file editors, so the whole config surface is
   editable in-app instead of by hand. (The subreddit-map editor is the first.)
@@ -197,7 +200,7 @@ Built since the first release:
 - **Upscaling under-sized art.** Flag, and optionally upscale, archived images
   below a long-edge threshold (~1920px) to raise the archive's quality floor.
 - Additional ingesters (local folder import, Pixiv bookmarks).
-- `.sh` launchers for Linux/macOS.
+
 
 ## Design doc
 

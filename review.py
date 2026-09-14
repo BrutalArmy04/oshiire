@@ -5,6 +5,7 @@ reads staging images, reads/writes the manifest, and (on Reject) deletes a
 staging file. Reuses manifest.py's load/save -- no reimplementation.
 """
 import copy
+import difflib
 import os
 import re
 import warnings
@@ -47,15 +48,24 @@ from shortname import (
     load_shortname_map,
     load_series_aliases,
     load_wallpaper_rules,
+    lookup_ci,
     match_shortname,
     merge_character,
     normalize_name_key,
     promote_character,
+    remove_character_alias,
+    remove_franchise_alias,
+    remove_series_alias,
+    remove_shortname_entry,
     resolve_character,
+    resolve_franchise,
+    same_series_name,
     save_character_alias,
     save_character_alias_dismissal,
     save_character_group_route,
+    save_franchise_alias,
     save_layout,
+    save_series_alias,
     propose_shortname_code,
     save_shortname_entry,
     find_shortname_collision,
@@ -734,6 +744,109 @@ def _character_alias_candidate(franchise_list, character_list, crossover=False,
     return None
 
 
+def _character_validation_md(character_list, franchise_list, crossover=False,
+                             same_series_group=False, is_oc=False,
+                             known_series=False):
+    """Inline, read-only advisory: which typed character names DON'T resolve to
+    a folder, each with a closest-folder suggestion. A sibling of
+    _character_alias_candidate, gated the SAME way so the inline hint and the
+    Accept-time alias prompt agree on when a name should resolve:
+
+    * silent unless EXACTLY ONE franchise (multi-franchise can't tell which
+      roster a name belongs to), that franchise resolves to a NESTED def with a
+      non-empty roster, and none of crossover / OC / Known-Series /
+      same-series-group is set (each routes the image where a character folder
+      is moot, so a non-match there is expected);
+    * a name already answered persistently (group-routed or dismissed) is
+      skipped, exactly as the alias prompt skips it.
+
+    The VERDICT is shortname.resolve_character -- the same call archive.py routes
+    with -- never a second matcher. The "did you mean" is difflib over the
+    roster, a SUGGESTION only that never changes the verdict and writes nothing.
+    """
+    if not character_list or not franchise_list:
+        return ""
+    if len(franchise_list) != 1 or crossover or known_series or is_oc or same_series_group:
+        return ""
+    folder, franchise_def = franchise_folder_and_def(franchise_list[0], layout, series_aliases)
+    if not folder or not franchise_def:
+        return ""
+    if franchise_def.get("style") != "nested":
+        return ""
+    choices = sorted(franchise_def.get("characters", []) or [])
+    if not choices:
+        return ""
+
+    lower_to_folder = {c.casefold(): c for c in choices}
+    unresolved = []
+    for name in character_list:
+        if is_group_routed(folder, name, layout) or is_alias_dismissed(folder, name, layout):
+            continue
+        if resolve_character(folder, franchise_def, name, layout) is not None:
+            continue
+        match = difflib.get_close_matches(name.casefold(), list(lower_to_folder), n=1, cutoff=0.6)
+        unresolved.append((name, lower_to_folder[match[0]] if match else None))
+
+    if not unresolved:
+        return ""
+
+    lines = [f"**Doesn't match a character folder in {folder}:**"]
+    for name, suggestion in unresolved:
+        if suggestion:
+            lines.append(f"- **{name}** — did you mean **{suggestion}**?")
+        else:
+            lines.append(f"- **{name}** — no matching folder.")
+    lines.append("Fix the spelling, or press **Accept** to file as-is and save "
+                 "it as an alternate name.")
+    return "\n".join(lines)
+
+
+def _franchise_validation_md(franchise_list):
+    """Inline, read-only advisory: which typed FRANCHISE names don't resolve,
+    each with a closest-franchise suggestion. The franchise-level sibling of
+    _character_validation_md, firing precisely where that one goes silent -- on a
+    franchise the character check needs resolved before it does anything.
+
+    VERDICT is shortname.resolve_franchise, the same call archive.py flags with.
+    resolve_franchise returns (folder, status); a franchise is KNOWN whenever
+    status != "unmapped", INCLUDING an alias to null ("known, no folder yet"),
+    so those are never flagged. The "did you mean" is difflib over the names
+    resolve_franchise accepts (franchise folders + franchise-alias keys), a
+    SUGGESTION only that never changes the verdict.
+
+    Ungated on purpose: every typed franchise is independently checkable, so it
+    validates each name even on a crossover -- the multi-franchise case the
+    character check deliberately can't touch.
+    """
+    if not franchise_list:
+        return ""
+    pool = list((layout.get("franchises") or {}).keys()) + \
+           list((layout.get("franchise_aliases") or {}).keys())
+    lower_to_name = {}
+    for name in pool:
+        lower_to_name.setdefault(name.casefold(), name)
+
+    unresolved = []
+    for name in franchise_list:
+        _, status = resolve_franchise(name, layout, series_aliases)
+        if status != "unmapped":
+            continue
+        match = difflib.get_close_matches(name.casefold(), list(lower_to_name), n=1, cutoff=0.6)
+        unresolved.append((name, lower_to_name[match[0]] if match else None))
+
+    if not unresolved:
+        return ""
+
+    lines = ["**Doesn't match a known franchise:**"]
+    for name, suggestion in unresolved:
+        if suggestion:
+            lines.append(f"- **{name}** — did you mean **{suggestion}**?")
+        else:
+            lines.append(f"- **{name}** — no matching franchise.")
+    lines.append("Fix the spelling if this is a typo.")
+    return "\n".join(lines)
+
+
 def _character_alias_prompt_md(pending):
     """The four answers, described by what each one actually does.
 
@@ -872,6 +985,26 @@ def _finalize_accept(entry, parsed, map_write, post_id, index, layout_snapshot=N
     # "one past wherever the cursor happens to be" on the deferred path.
     current_index = index + 1
     return status
+
+
+def on_character_validation(character_text, franchise_text, crossover_value,
+                            same_series_group_value, oc_value, known_series_value):
+    """Live inline validation as the reviewer edits the boxes. Advisory only --
+    returns the Markdown string, writes nothing. Wired through gr.on so it also
+    fires when _render_current sets the boxes on navigation, keeping the line in
+    sync without a place in `outputs`."""
+    return _character_validation_md(
+        _parse_lines(character_text), _parse_lines(franchise_text),
+        crossover=bool(crossover_value), same_series_group=bool(same_series_group_value),
+        is_oc=bool(oc_value), known_series=bool(known_series_value),
+    )
+
+
+def on_franchise_validation(franchise_text):
+    """Live inline franchise validation as the reviewer edits the Franchise box.
+    Advisory only. .change() fires on programmatic set too, so the line tracks
+    the shown entry on navigation and clears on the empty-queue branch."""
+    return _franchise_validation_md(_parse_lines(franchise_text))
 
 
 def on_accept(character_text, franchise_text, crossover_value, same_series_group_value, wallpaper_value,
@@ -1735,6 +1868,375 @@ def on_character_merge(franchise, name, into):
     )
 
 
+# ---------------------------------------------------------------------------
+# Settings tab: Franchise aliases -- layout.json `franchise_aliases`, a FLAT
+# {variant: folder-or-null} map, edited through save_franchise_alias /
+# remove_franchise_alias.
+#
+# Operates on review.py's OWN in-memory `layout`, the same dict routing and the
+# Character Folders tab mutate: the writers change it in place and persist, so
+# an edit here reaches the next routed image with no reload. A null value is a
+# SHAPE ("franchise known, no folder yet"), distinct from empty -- the same
+# null/empty split the subreddit panel makes.
+# ---------------------------------------------------------------------------
+
+def _fa_table():
+    return layout.get("franchise_aliases") or {}
+
+
+def _fa_folder_exists(folder):
+    """True iff `folder` names a real franchise folder in layout, matched the
+    same case-insensitive way routing resolves it."""
+    matched, _ = lookup_ci(layout.get("franchises") or {}, folder)
+    return matched is not None
+
+
+def _fa_caution(folder, is_null):
+    """Soft guard: a NON-null alias whose folder doesn't exist won't route
+    anything. Warn, never block -- null is always fine."""
+    if is_null or not folder:
+        return ""
+    if _fa_folder_exists(folder):
+        return ""
+    return (f"⚠️ No franchise folder **{folder}** exists in layout yet — this alias "
+            f"won't route anything until that folder is created. (A null alias is "
+            f"always fine.)")
+
+
+def _fa_render(selected=None, status="", key_text=None):
+    table = _fa_table()
+    keys = sorted(table)
+    has = selected in table
+    value = table.get(selected) if has else None
+    is_null = has and value is None
+    folder = "" if value is None else str(value)
+    return {
+        fa_dropdown: gr.update(choices=keys, value=selected if has else None),
+        fa_key_box: key_text if key_text is not None else (selected or ""),
+        fa_folder_box: gr.update(value=folder, interactive=not is_null),
+        fa_null_box: is_null,
+        fa_caution_md: _fa_caution(folder, is_null),
+        fa_status_md: status,
+        fa_count_md: f"**{len(keys)}** franchise alias(es).",
+    }
+
+
+def on_fa_select(selected):
+    return _fa_render(selected=selected)
+
+
+def on_fa_add():
+    return _fa_render(selected=None, key_text="",
+                      status="Type a variant name, set its folder (or tick "
+                             "**No folder yet**), then Save.")
+
+
+def on_fa_null_toggle(is_null):
+    """Same trap as the subreddit null box: an editable folder field whose
+    contents are about to be ignored. Grey it out when null is chosen."""
+    return gr.update(interactive=not is_null)
+
+
+def on_fa_save(key_text, folder_text, is_null, selected):
+    key = (key_text or "").strip()
+    if not key:
+        return _fa_render(selected=selected, key_text=key_text,
+                          status="⚠️ Variant name is empty — nothing saved.")
+    folder_text = (folder_text or "").strip()
+    if is_null:
+        folder = None
+    elif not folder_text:
+        return _fa_render(selected=selected, key_text=key_text,
+                          status="⚠️ Folder is empty — type a folder, or tick "
+                                 "**No folder yet** to write `null` (franchise known, "
+                                 "no folder yet).")
+    else:
+        folder = folder_text
+
+    renamed_from = selected if selected and selected != key else None
+    if renamed_from:
+        remove_franchise_alias(renamed_from, layout)
+    save_franchise_alias(key, folder, layout)
+
+    shown = "`null` (no folder yet)" if folder is None else f"→ **{folder}**"
+    action = (f"Renamed **{renamed_from}** → **{key}**" if renamed_from
+              else f"Saved **{key}**")
+    return _fa_render(selected=key, status=f"✅ {action} {shown}.")
+
+
+def on_fa_delete(selected):
+    if not selected:
+        return _fa_render(selected=None, status="⚠️ Nothing selected — nothing deleted.")
+    if selected not in _fa_table():
+        return _fa_render(selected=None,
+                          status=f"⚠️ **{selected}** isn't in the table — nothing deleted.")
+    remove_franchise_alias(selected, layout)
+    return _fa_render(selected=None, key_text="", status=f"🗑️ Deleted **{selected}**.")
+
+
+# ---------------------------------------------------------------------------
+# Settings tab: Character aliases -- layout.json `character_aliases`, nested by
+# franchise FOLDER {folder: {variant: canonical}}. Two-level: pick a nested
+# franchise folder first, then edit that folder's aliases via
+# save_character_alias / remove_character_alias. Same in-memory `layout`.
+#
+# HARD guard: a variant that normalizes (normalize_name_key) to the franchise
+# folder's OWN name is refused -- that "Genshin Impact": "Ayaka" shape files
+# every franchise-only tag into one character, and is exactly the store that bug
+# lived in.
+# ---------------------------------------------------------------------------
+
+def _ca_aliases(folder):
+    return (layout.get("character_aliases") or {}).get(folder) or {}
+
+
+def _ca_impact(folder, variant):
+    """Informational only: how many already-archived images tagged `variant`
+    sit under this franchise folder. An alias change re-routes FUTURE images;
+    these are read-only context, reusing _archived_count_under."""
+    if not folder or not variant:
+        return ""
+    count = _archived_count_under(variant, folder)
+    if not count:
+        return ""
+    return (f"ℹ️ **{count}** archived image(s) tagged “{variant}” are already filed "
+            f"under `{folder}/`. Changing this alias only affects images filed "
+            f"from now on.")
+
+
+def _ca_render(folder=None, selected=None, status="", key_text=None, impact=""):
+    folders = _nested_franchises()
+    valid_folder = folder if folder in folders else None
+    aliases = _ca_aliases(valid_folder) if valid_folder else {}
+    variants = sorted(aliases)
+    has = bool(valid_folder) and selected in aliases
+    canonical = aliases.get(selected, "") if has else ""
+    if valid_folder:
+        count = f"**{valid_folder}** — {len(variants)} character alias(es)."
+    else:
+        count = f"**{len(folders)}** series file into character folders."
+    return {
+        ca_franchise_dropdown: gr.update(choices=folders, value=valid_folder),
+        ca_variant_dropdown: gr.update(choices=variants, value=selected if has else None),
+        ca_key_box: key_text if key_text is not None else (selected or ""),
+        ca_canonical_box: str(canonical),
+        ca_impact_md: impact,
+        ca_status_md: status,
+        ca_count_md: count,
+    }
+
+
+def on_ca_franchise_select(folder):
+    return _ca_render(folder=folder)
+
+
+def on_ca_variant_select(folder, selected):
+    return _ca_render(folder=folder, selected=selected, impact=_ca_impact(folder, selected))
+
+
+def on_ca_add(folder):
+    if not folder or folder not in _nested_franchises():
+        return _ca_render(folder=folder, status="⚠️ Pick a series first.")
+    return _ca_render(folder=folder, key_text="",
+                      status="Type a name and the folder it files under, then Save.")
+
+
+def on_ca_save(folder, key_text, canonical_text, selected):
+    if not folder or folder not in _nested_franchises():
+        return _ca_render(folder=folder, status="⚠️ Pick a series first — nothing saved.")
+    key = (key_text or "").strip()
+    if not key:
+        return _ca_render(folder=folder, selected=selected, key_text=key_text,
+                          status="⚠️ Name is empty — nothing saved.")
+    # HARD guard: a variant that resolves to the franchise's own folder name
+    # would route every franchise-only tag into one character.
+    if normalize_name_key(key) == normalize_name_key(folder):
+        return _ca_render(folder=folder, selected=selected, key_text=key_text,
+                          status=(f"🚫 **{key}** is the series’ own name — saving it as a "
+                                  f"character alias would file every **{folder}** image "
+                                  f"into one character folder. Nothing saved."))
+    canonical = (canonical_text or "").strip()
+    if not canonical:
+        return _ca_render(folder=folder, selected=selected, key_text=key_text,
+                          status="⚠️ Target folder is empty — nothing saved.")
+
+    renamed_from = selected if selected and selected != key else None
+    if renamed_from:
+        remove_character_alias(folder, renamed_from, layout)
+    save_character_alias(folder, key, canonical, layout)
+
+    action = (f"Renamed **{renamed_from}** → **{key}**" if renamed_from else f"Saved **{key}**")
+    return _ca_render(folder=folder, selected=key,
+                      status=f"✅ {action} — files under **{canonical}** in {folder}.")
+
+
+def on_ca_delete(folder, selected):
+    if not folder or not selected:
+        return _ca_render(folder=folder, status="⚠️ Nothing selected — nothing deleted.")
+    if selected not in _ca_aliases(folder):
+        return _ca_render(folder=folder,
+                          status=f"⚠️ **{selected}** isn't an alias in {folder} — nothing deleted.")
+    remove_character_alias(folder, selected, layout)
+    return _ca_render(folder=folder, key_text="", status=f"🗑️ Deleted **{selected}**.")
+
+
+# ---------------------------------------------------------------------------
+# Settings tab: Series aliases -- data/series_aliases.json {variant: canonical},
+# a FLAT map edited through save_series_alias / remove_series_alias (both go
+# through save_series_aliases, now raise-on-malformed). Read LIVE each open;
+# after a write the module-level `series_aliases` routing/validation consult is
+# refreshed, so an edit here applies to the next tagged post immediately.
+# ---------------------------------------------------------------------------
+
+def _refresh_series_aliases():
+    global series_aliases
+    series_aliases = load_series_aliases()
+
+
+def _sa_render(selected=None, status="", key_text=None):
+    table = load_series_aliases()
+    keys = sorted(table)
+    has = selected in table
+    canonical = table.get(selected, "") if has else ""
+    return {
+        sa_dropdown: gr.update(choices=keys, value=selected if has else None),
+        sa_key_box: key_text if key_text is not None else (selected or ""),
+        sa_canonical_box: str(canonical),
+        sa_status_md: status,
+        sa_count_md: f"**{len(keys)}** series alias(es).",
+    }
+
+
+def on_sa_select(selected):
+    return _sa_render(selected=selected)
+
+
+def on_sa_add():
+    return _sa_render(selected=None, key_text="",
+                      status="Type a variant series name and its canonical name, then Save.")
+
+
+def on_sa_save(key_text, canonical_text, selected):
+    key = (key_text or "").strip()
+    if not key:
+        return _sa_render(selected=selected, key_text=key_text,
+                          status="⚠️ Variant name is empty — nothing saved.")
+    canonical = (canonical_text or "").strip()
+    if not canonical:
+        return _sa_render(selected=selected, key_text=key_text,
+                          status="⚠️ Canonical name is empty — nothing saved.")
+    renamed_from = selected if selected and selected != key else None
+    if renamed_from:
+        remove_series_alias(renamed_from)
+    save_series_alias(key, canonical)
+    _refresh_series_aliases()
+    action = (f"Renamed **{renamed_from}** → **{key}**" if renamed_from else f"Saved **{key}**")
+    return _sa_render(selected=key, status=f"✅ {action} → **{canonical}**.")
+
+
+def on_sa_delete(selected):
+    if not selected:
+        return _sa_render(selected=None, status="⚠️ Nothing selected — nothing deleted.")
+    if selected not in load_series_aliases():
+        return _sa_render(selected=None,
+                          status=f"⚠️ **{selected}** isn't in the table — nothing deleted.")
+    remove_series_alias(selected)
+    _refresh_series_aliases()
+    return _sa_render(selected=None, key_text="", status=f"🗑️ Deleted **{selected}**.")
+
+
+# ---------------------------------------------------------------------------
+# Settings tab: Shortnames -- the line-based shortname file ("CODE = Full Name"),
+# edited through save_shortname_entry / remove_shortname_entry. Identity is
+# full_name (both writers match on same_series_name), so the dropdown value is
+# the full name. Read LIVE each open; after a write the module-level
+# `shortname_entries` the Accept path consults is refreshed. Changing a CODE
+# affects only images filed FROM NOW ON -- already-filed suffixes are inert and
+# nothing on disk renames.
+# ---------------------------------------------------------------------------
+
+def _sn_path():
+    return Path(layout["shortname_file"])
+
+
+def _sn_entries():
+    return load_shortname_map(layout)
+
+
+def _sn_find(full_name):
+    for code, full in _sn_entries():
+        if same_series_name(full, full_name):
+            return code, full
+    return None
+
+
+def _refresh_shortname_entries():
+    global shortname_entries
+    shortname_entries = load_shortname_map(layout)
+
+
+def _sn_render(selected=None, status="", code_text=None, full_text=None):
+    entries = _sn_entries()
+    choices = [(f"{code} = {full}", full) for code, full in entries]
+    found = _sn_find(selected) if selected else None
+    return {
+        sn_dropdown: gr.update(choices=choices, value=found[1] if found else None),
+        sn_code_box: code_text if code_text is not None else (found[0] if found else ""),
+        sn_fullname_box: full_text if full_text is not None
+                         else (found[1] if found else (selected or "")),
+        sn_status_md: status,
+        sn_count_md: f"**{len(entries)}** shortname entr(ies).",
+    }
+
+
+def on_sn_select(selected):
+    return _sn_render(selected=selected)
+
+
+def on_sn_add():
+    return _sn_render(selected=None, code_text="", full_text="",
+                      status="Type a full series name and a short code, then Save.")
+
+
+def on_sn_save(code_text, full_text, selected):
+    code = (code_text or "").strip()
+    full = (full_text or "").strip()
+    if not full:
+        return _sn_render(selected=selected, code_text=code_text, full_text=full_text,
+                          status="⚠️ Full series name is empty — nothing saved.")
+    if not code:
+        return _sn_render(selected=selected, code_text=code_text, full_text=full_text,
+                          status="⚠️ Code is empty — nothing saved.")
+    path = _sn_path()
+    collision = find_shortname_collision(path, code, full)
+    if collision:
+        return _sn_render(selected=selected, code_text=code_text, full_text=full_text,
+                          status=(f"⚠️ Code **{code}** is already used by “{collision}”. "
+                                  f"Pick a different code — nothing saved."))
+    # Identity is full_name, so a changed full name is a rename: drop the old
+    # line first, or the file keeps both under two codes.
+    renamed_from = selected if selected and not same_series_name(selected, full) else None
+    if renamed_from:
+        remove_shortname_entry(path, renamed_from)
+    save_shortname_entry(path, code, full)
+    _refresh_shortname_entries()
+    if not verify_shortname_entry(path, code, full):
+        return _sn_render(selected=full,
+                          status="⚠️ The save didn't persist to disk — check the shortname file path.")
+    action = (f"Renamed “{renamed_from}” → " if renamed_from else "Saved ")
+    return _sn_render(selected=full, status=f"✅ {action}**{code} = {full}**.")
+
+
+def on_sn_delete(selected):
+    if not selected:
+        return _sn_render(selected=None, status="⚠️ Nothing selected — nothing deleted.")
+    if _sn_find(selected) is None:
+        return _sn_render(selected=None, status=f"⚠️ “{selected}” isn't in the file — nothing deleted.")
+    remove_shortname_entry(_sn_path(), selected)
+    _refresh_shortname_entries()
+    return _sn_render(selected=None, code_text="", full_text="", status=f"🗑️ Deleted “{selected}”.")
+
+
 with gr.Blocks(title="Oshiire review", analytics_enabled=False) as demo:
   with gr.Tabs():
    # Indentation inside the tabs is deliberately shallow (1 space per level):
@@ -1762,7 +2264,9 @@ with gr.Blocks(title="Oshiire review", analytics_enabled=False) as demo:
                 title_md = gr.Markdown()
                 meta_md = gr.Markdown()
                 character_box = gr.Textbox(label="Character guess (one per line)", lines=3)
+                char_validation_md = gr.Markdown()
                 franchise_box = gr.Textbox(label="Franchise (one per line)", lines=2)
+                franchise_validation_md = gr.Markdown()
                 crossover_box = gr.Checkbox(label="Crossover")
                 same_series_group_box = gr.Checkbox(label="Same-series group")
                 oc_box = gr.Checkbox(label="Original character (OC)")
@@ -1864,100 +2368,299 @@ with gr.Blocks(title="Oshiire review", analytics_enabled=False) as demo:
     dup_action_btn.click(fn=on_reject_duplicate, outputs=outputs)
     undo_btn.click(fn=on_undo, outputs=outputs)
 
+    # Live inline character/folder validation. .change() (not .input) is
+    # intentional: it fires when _render_current sets the boxes programmatically
+    # on navigation and at demo.load, so the line refreshes on every entry and
+    # clears on the empty-queue branch (boxes set to ""). char_validation_md is
+    # deliberately NOT in `outputs` -- it is advisory and driven by its own
+    # events, so the render contract stays at EXPECTED_OUTPUT_COUNT.
+    gr.on(
+        triggers=[character_box.change, franchise_box.change, crossover_box.change,
+                  same_series_group_box.change, oc_box.change, known_series_box.change],
+        fn=on_character_validation,
+        inputs=[character_box, franchise_box, crossover_box, same_series_group_box,
+                oc_box, known_series_box],
+        outputs=[char_validation_md],
+    )
+    franchise_box.change(
+        fn=on_franchise_validation,
+        inputs=[franchise_box],
+        outputs=[franchise_validation_md],
+    )
+
    with gr.Tab("Settings") as settings_tab:
-    gr.Markdown(
-        "### subreddit_map.json\n"
-        "The lookup that turns a subreddit into a franchise (and, for "
-        "character-specific subs, a character). Edits apply to the next tagged "
-        "post immediately — nothing caches this file."
-    )
-    settings_count_md = gr.Markdown()
-    # Choices are set HERE as well as by the load event, and allow_custom_value
-    # is on, because Dropdown.preprocess validates the submitted value against
-    # the SERVER-side component's choices -- and gr.update(choices=...) only
-    # repaints the client. Built with choices=[], every selection came back
-    # "Value: asuka is not in the list of choices: []". Seeding them covers the
-    # entries that exist at launch; allow_custom_value covers the ones added
-    # through this tab afterwards, which the server object still won't know
-    # about. (Same reason char_alias_dropdown sets it.)
-    settings_dropdown = gr.Dropdown(
-        choices=_settings_keys(), value=None, label="Subreddit", filterable=True,
-        allow_custom_value=True,
-        info="Type to filter.",
-    )
-    settings_key_box = gr.Textbox(
-        label="Subreddit key", max_lines=1,
-        info="Lowercased on save. Changing this renames the entry.",
-    )
-    settings_franchise_box = gr.Textbox(
-        label="Franchise", max_lines=1,
-        info="The source work this sub is about.",
-    )
-    # A null franchise is a SHAPE, not a missing value: it marks a sub whose
-    # franchise comes from the title. Seven entries rely on it, so the UI has
-    # to let the user say "null" distinctly from "empty".
-    settings_null_box = gr.Checkbox(
-        label="No franchise — parse it from the post title (writes null)",
-    )
-    settings_character_box = gr.Textbox(
-        label="Character", max_lines=1,
-        info="Only for character-specific subs. Leave empty to clear it.",
-    )
-    settings_extras_md = gr.Markdown()
-    with gr.Row():
-        settings_save_btn = gr.Button("Save", variant="primary")
-        settings_delete_btn = gr.Button("Delete", variant="stop")
-        settings_add_btn = gr.Button("Add new")
-    settings_status_md = gr.Markdown()
+    # Each config store gets its OWN sub-tab. The nesting is 1 space per level,
+    # same convention as the outer Tabs, so wrapping the subreddit panel doesn't
+    # reflow it beyond the +2 the extra level costs; each panel keeps its own
+    # outputs list, so the Review render contract is untouched.
+    with gr.Tabs():
+     with gr.Tab("Subreddit map") as subreddit_subtab:
+      gr.Markdown(
+          "### subreddit_map.json\n"
+          "The lookup that turns a subreddit into a franchise (and, for "
+          "character-specific subs, a character). Edits apply to the next tagged "
+          "post immediately — nothing caches this file."
+      )
+      settings_count_md = gr.Markdown()
+      # Choices are set HERE as well as by the load event, and allow_custom_value
+      # is on, because Dropdown.preprocess validates the submitted value against
+      # the SERVER-side component's choices -- and gr.update(choices=...) only
+      # repaints the client. Built with choices=[], every selection came back
+      # "Value: asuka is not in the list of choices: []". Seeding them covers the
+      # entries that exist at launch; allow_custom_value covers the ones added
+      # through this tab afterwards, which the server object still won't know
+      # about. (Same reason char_alias_dropdown sets it.)
+      settings_dropdown = gr.Dropdown(
+          choices=_settings_keys(), value=None, label="Subreddit", filterable=True,
+          allow_custom_value=True,
+          info="Type to filter.",
+      )
+      settings_key_box = gr.Textbox(
+          label="Subreddit key", max_lines=1,
+          info="Lowercased on save. Changing this renames the entry.",
+      )
+      settings_franchise_box = gr.Textbox(
+          label="Franchise", max_lines=1,
+          info="The source work this sub is about.",
+      )
+      # A null franchise is a SHAPE, not a missing value: it marks a sub whose
+      # franchise comes from the title. Seven entries rely on it, so the UI has
+      # to let the user say "null" distinctly from "empty".
+      settings_null_box = gr.Checkbox(
+          label="No franchise — parse it from the post title (writes null)",
+      )
+      settings_character_box = gr.Textbox(
+          label="Character", max_lines=1,
+          info="Only for character-specific subs. Leave empty to clear it.",
+      )
+      settings_extras_md = gr.Markdown()
+      with gr.Row():
+          settings_save_btn = gr.Button("Save", variant="primary")
+          settings_delete_btn = gr.Button("Delete", variant="stop")
+          settings_add_btn = gr.Button("Add new")
+      settings_status_md = gr.Markdown()
 
-    # Registration list for the Settings form, mirroring `outputs` above. The
-    # handlers return {component: value} dicts, so this list only declares
-    # which components a Settings event may repaint -- never an order the
-    # handlers have to match.
-    settings_outputs = [
-        settings_dropdown,
-        settings_key_box,
-        settings_franchise_box,
-        settings_null_box,
-        settings_character_box,
-        settings_extras_md,
-        settings_status_md,
-        settings_count_md,
-    ]
+      # Registration list for the Settings form, mirroring `outputs` above. The
+      # handlers return {component: value} dicts, so this list only declares
+      # which components a Settings event may repaint -- never an order the
+      # handlers have to match.
+      settings_outputs = [
+          settings_dropdown,
+          settings_key_box,
+          settings_franchise_box,
+          settings_null_box,
+          settings_character_box,
+          settings_extras_md,
+          settings_status_md,
+          settings_count_md,
+      ]
 
-    # Populated when the tab is OPENED, not by a second demo.load at startup.
-    # The panel reads subreddit_map.json, and that file changes underneath it:
-    # the Review tab's own subreddit-map confirm panel writes to it. A
-    # once-at-launch population would show a stale map for the rest of the
-    # session, so refreshing on open is the correct trigger independently of
-    # any startup-timing concern. It also keeps the panel off the startup path
-    # entirely -- opening the tab is always what fills it in.
-    #
-    # No `inputs`: gradio injects SelectData only into a parameter type-hinted
-    # for it, and _settings_render has no hints, so this calls it with no
-    # arguments.
-    settings_tab.select(fn=_settings_render, outputs=settings_outputs)
-    # .input(), not .change(): .change() also fires when a handler sets the
-    # value programmatically, so every Save -- which re-selects the saved key --
-    # would immediately re-render with an empty status and swallow its own
-    # confirmation message.
-    settings_dropdown.input(
-        fn=on_settings_select, inputs=[settings_dropdown], outputs=settings_outputs
-    )
-    settings_null_box.input(
-        fn=on_settings_null_toggle, inputs=[settings_null_box],
-        outputs=[settings_franchise_box],
-    )
-    settings_save_btn.click(
-        fn=on_settings_save,
-        inputs=[settings_key_box, settings_franchise_box, settings_null_box,
-                settings_character_box, settings_dropdown],
-        outputs=settings_outputs,
-    )
-    settings_delete_btn.click(
-        fn=on_settings_delete, inputs=[settings_dropdown], outputs=settings_outputs
-    )
-    settings_add_btn.click(fn=on_settings_add, outputs=settings_outputs)
+      # Populated when the tab is OPENED, not by a second demo.load at startup.
+      # The panel reads subreddit_map.json, and that file changes underneath it:
+      # the Review tab's own subreddit-map confirm panel writes to it. A
+      # once-at-launch population would show a stale map for the rest of the
+      # session, so refreshing on open is the correct trigger independently of
+      # any startup-timing concern. It also keeps the panel off the startup path
+      # entirely -- opening the tab is always what fills it in.
+      #
+      # No `inputs`: gradio injects SelectData only into a parameter type-hinted
+      # for it, and _settings_render has no hints, so this calls it with no
+      # arguments.
+      settings_tab.select(fn=_settings_render, outputs=settings_outputs)
+      subreddit_subtab.select(fn=_settings_render, outputs=settings_outputs)
+      # .input(), not .change(): .change() also fires when a handler sets the
+      # value programmatically, so every Save -- which re-selects the saved key --
+      # would immediately re-render with an empty status and swallow its own
+      # confirmation message.
+      settings_dropdown.input(
+          fn=on_settings_select, inputs=[settings_dropdown], outputs=settings_outputs
+      )
+      settings_null_box.input(
+          fn=on_settings_null_toggle, inputs=[settings_null_box],
+          outputs=[settings_franchise_box],
+      )
+      settings_save_btn.click(
+          fn=on_settings_save,
+          inputs=[settings_key_box, settings_franchise_box, settings_null_box,
+                  settings_character_box, settings_dropdown],
+          outputs=settings_outputs,
+      )
+      settings_delete_btn.click(
+          fn=on_settings_delete, inputs=[settings_dropdown], outputs=settings_outputs
+      )
+      settings_add_btn.click(fn=on_settings_add, outputs=settings_outputs)
+
+     with gr.Tab("Franchise aliases") as franchise_alias_subtab:
+      gr.Markdown(
+          "### Franchise aliases\n"
+          "Maps a franchise name as it's **tagged** to the archive folder it "
+          "files into (`Azure Lane` → `Azur Lane`). Tick **No folder yet** to "
+          "record a franchise that has no folder yet (writes `null`). Edits apply "
+          "to the next routed image immediately."
+      )
+      fa_count_md = gr.Markdown()
+      fa_dropdown = gr.Dropdown(
+          choices=sorted(_fa_table()), value=None, label="Variant name",
+          filterable=True, allow_custom_value=True, info="Type to filter.",
+      )
+      fa_key_box = gr.Textbox(
+          label="Variant name", max_lines=1,
+          info="The franchise name as tagged. Changing this renames the alias.",
+      )
+      fa_folder_box = gr.Textbox(
+          label="Folder", max_lines=1,
+          info="The archive folder this franchise files into.",
+      )
+      fa_null_box = gr.Checkbox(
+          label="No folder yet — record the franchise but leave it unrouted (writes null)",
+      )
+      fa_caution_md = gr.Markdown()
+      with gr.Row():
+          fa_save_btn = gr.Button("Save", variant="primary")
+          fa_delete_btn = gr.Button("Delete", variant="stop")
+          fa_add_btn = gr.Button("Add new")
+      fa_status_md = gr.Markdown()
+
+      fa_outputs = [fa_dropdown, fa_key_box, fa_folder_box, fa_null_box,
+                    fa_caution_md, fa_status_md, fa_count_md]
+
+      franchise_alias_subtab.select(fn=_fa_render, outputs=fa_outputs)
+      fa_dropdown.input(fn=on_fa_select, inputs=[fa_dropdown], outputs=fa_outputs)
+      fa_null_box.input(fn=on_fa_null_toggle, inputs=[fa_null_box], outputs=[fa_folder_box])
+      fa_save_btn.click(
+          fn=on_fa_save,
+          inputs=[fa_key_box, fa_folder_box, fa_null_box, fa_dropdown],
+          outputs=fa_outputs,
+      )
+      fa_delete_btn.click(fn=on_fa_delete, inputs=[fa_dropdown], outputs=fa_outputs)
+      fa_add_btn.click(fn=on_fa_add, outputs=fa_outputs)
+
+     with gr.Tab("Character aliases") as character_alias_subtab:
+      gr.Markdown(
+          "### Character aliases\n"
+          "Per-series: maps a character name as **tagged** to the character "
+          "folder it files into (`Raiden Shogun` → `Raiden`). Pick a series, then "
+          "edit its aliases. Only series filed into character subfolders appear."
+      )
+      ca_count_md = gr.Markdown()
+      ca_franchise_dropdown = gr.Dropdown(
+          choices=_nested_franchises(), value=None, label="Series",
+          filterable=True, allow_custom_value=True, info="Type to filter.",
+      )
+      ca_variant_dropdown = gr.Dropdown(
+          choices=[], value=None, label="Existing alias",
+          filterable=True, allow_custom_value=True,
+          info="Pick one to edit, or use Add new.",
+      )
+      ca_key_box = gr.Textbox(
+          label="Name as tagged", max_lines=1,
+          info="Changing this renames the alias.",
+      )
+      ca_canonical_box = gr.Textbox(
+          label="Files under (folder)", max_lines=1,
+          info="An existing character folder in this series.",
+      )
+      ca_impact_md = gr.Markdown()
+      with gr.Row():
+          ca_save_btn = gr.Button("Save", variant="primary")
+          ca_delete_btn = gr.Button("Delete", variant="stop")
+          ca_add_btn = gr.Button("Add new")
+      ca_status_md = gr.Markdown()
+
+      ca_outputs = [ca_franchise_dropdown, ca_variant_dropdown, ca_key_box,
+                    ca_canonical_box, ca_impact_md, ca_status_md, ca_count_md]
+
+      character_alias_subtab.select(fn=_ca_render, outputs=ca_outputs)
+      ca_franchise_dropdown.input(
+          fn=on_ca_franchise_select, inputs=[ca_franchise_dropdown], outputs=ca_outputs
+      )
+      ca_variant_dropdown.input(
+          fn=on_ca_variant_select,
+          inputs=[ca_franchise_dropdown, ca_variant_dropdown], outputs=ca_outputs,
+      )
+      ca_save_btn.click(
+          fn=on_ca_save,
+          inputs=[ca_franchise_dropdown, ca_key_box, ca_canonical_box, ca_variant_dropdown],
+          outputs=ca_outputs,
+      )
+      ca_delete_btn.click(
+          fn=on_ca_delete, inputs=[ca_franchise_dropdown, ca_variant_dropdown], outputs=ca_outputs
+      )
+      ca_add_btn.click(fn=on_ca_add, inputs=[ca_franchise_dropdown], outputs=ca_outputs)
+
+     with gr.Tab("Series aliases") as series_alias_subtab:
+      gr.Markdown(
+          "### Series aliases\n"
+          "Maps a variant series name to its canonical name (`Re:Zero` → "
+          "`Re Zero`), so a tag spelled differently still resolves. Edits apply "
+          "to the next tagged post immediately."
+      )
+      sa_count_md = gr.Markdown()
+      sa_dropdown = gr.Dropdown(
+          choices=sorted(load_series_aliases()), value=None, label="Variant name",
+          filterable=True, allow_custom_value=True, info="Type to filter.",
+      )
+      sa_key_box = gr.Textbox(
+          label="Variant name", max_lines=1,
+          info="The series name as tagged. Changing this renames the alias.",
+      )
+      sa_canonical_box = gr.Textbox(
+          label="Canonical name", max_lines=1,
+          info="The series name everything should resolve to.",
+      )
+      with gr.Row():
+          sa_save_btn = gr.Button("Save", variant="primary")
+          sa_delete_btn = gr.Button("Delete", variant="stop")
+          sa_add_btn = gr.Button("Add new")
+      sa_status_md = gr.Markdown()
+
+      sa_outputs = [sa_dropdown, sa_key_box, sa_canonical_box, sa_status_md, sa_count_md]
+
+      series_alias_subtab.select(fn=_sa_render, outputs=sa_outputs)
+      sa_dropdown.input(fn=on_sa_select, inputs=[sa_dropdown], outputs=sa_outputs)
+      sa_save_btn.click(
+          fn=on_sa_save, inputs=[sa_key_box, sa_canonical_box, sa_dropdown], outputs=sa_outputs
+      )
+      sa_delete_btn.click(fn=on_sa_delete, inputs=[sa_dropdown], outputs=sa_outputs)
+      sa_add_btn.click(fn=on_sa_add, outputs=sa_outputs)
+
+     with gr.Tab("Shortnames") as shortname_subtab:
+      gr.Markdown(
+          "### Shortnames\n"
+          "The `CODE = Full Series Name` table for series filed under "
+          "`Others/Known Series`. Changing a code affects only images filed from "
+          "now on — already-filed names keep their (inert) suffix, so nothing on "
+          "disk renames."
+      )
+      sn_count_md = gr.Markdown()
+      sn_dropdown = gr.Dropdown(
+          choices=[(f"{c} = {f}", f) for c, f in load_shortname_map(layout)],
+          value=None, label="Entry", filterable=True, allow_custom_value=True,
+          info="Type to filter.",
+      )
+      sn_code_box = gr.Textbox(
+          label="Code", max_lines=1,
+          info="The short suffix added to filenames.",
+      )
+      sn_fullname_box = gr.Textbox(
+          label="Full series name", max_lines=1,
+          info="Identifies the entry. Changing this renames the entry.",
+      )
+      with gr.Row():
+          sn_save_btn = gr.Button("Save", variant="primary")
+          sn_delete_btn = gr.Button("Delete", variant="stop")
+          sn_add_btn = gr.Button("Add new")
+      sn_status_md = gr.Markdown()
+
+      sn_outputs = [sn_dropdown, sn_code_box, sn_fullname_box, sn_status_md, sn_count_md]
+
+      shortname_subtab.select(fn=_sn_render, outputs=sn_outputs)
+      sn_dropdown.input(fn=on_sn_select, inputs=[sn_dropdown], outputs=sn_outputs)
+      sn_save_btn.click(
+          fn=on_sn_save, inputs=[sn_code_box, sn_fullname_box, sn_dropdown], outputs=sn_outputs
+      )
+      sn_delete_btn.click(fn=on_sn_delete, inputs=[sn_dropdown], outputs=sn_outputs)
+      sn_add_btn.click(fn=on_sn_add, outputs=sn_outputs)
 
    with gr.Tab("Sync") as sync_tab:
     gr.Markdown(

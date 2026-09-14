@@ -299,23 +299,6 @@ class SaveSeriesAliasesEnvelopeTest(unittest.TestCase):
         self.assertNotIn(b"\r\n", raw)
         self.assertIn(b"\n", raw, "indent=2 must still produce newlines")
 
-    def test_a_non_dict_top_level_does_not_crash_the_write(self):
-        """A hand-edited file can be malformed. Reading the raw envelope back
-        must not turn a bad one into a TypeError on write -- the map the caller
-        passed in still has to land.
-
-        Asserted against save_series_aliases directly. save_series_alias can't
-        reach here: it loads the current map first, and load_series_aliases has
-        always raised on a non-dict top level. That is unchanged and out of
-        scope -- a malformed file failing loudly on READ is fine; a write that
-        was handed the whole map failing is not."""
-        self.path.write_text(json.dumps(["not", "an", "envelope"]), encoding="utf-8")
-
-        save_series_aliases({"Starfall": "Starfall Chronicle"}, self.path)
-
-        self.assertEqual(self._envelope(),
-                         {"aliases": {"Starfall": "Starfall Chronicle"}})
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

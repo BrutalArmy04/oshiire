@@ -71,14 +71,23 @@ def save_series_aliases(aliases: dict, path: Path = SERIES_ALIASES_PATH) -> None
     alias panel writes through here, so the envelope has to be preserved rather
     than rebuilt.
 
+    A non-object top level is REFUSED with ValueError, never silently coerced to
+    {} and overwritten: the Settings series panel writes the whole table through
+    here, so flattening a malformed file would discard whatever the user
+    actually had in it.
+
     `newline=""` for the same reason as save_layout: LF on disk everywhere."""
     path.parent.mkdir(parents=True, exist_ok=True)
     data = {}
     if path.exists():
         with path.open("r", encoding="utf-8") as f:
             loaded = json.load(f)
-        if isinstance(loaded, dict):
-            data = loaded
+        if not isinstance(loaded, dict):
+            raise ValueError(
+                f"{path} has a non-object top level "
+                f"({type(loaded).__name__}); refusing to overwrite it."
+            )
+        data = loaded
     data["aliases"] = aliases
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     with tmp_path.open("w", encoding="utf-8", newline="") as f:
@@ -231,6 +240,40 @@ def remove_character_alias(folder_name: str, variant: str, layout: dict,
     recorded."""
     if _alias_drop(layout, folder_name, variant):
         save_layout(layout, path)
+    return layout
+
+
+def save_franchise_alias(variant, folder, layout, path=LAYOUT_PATH):
+    """Records a franchise alias (variant -> folder) and returns the updated
+    layout. The franchise-level twin of save_character_alias, but FLAT.
+    `folder` may be None, which writes JSON null -- the deliberate SHAPE meaning
+    "franchise is known but has no folder yet" (archive.py reads null that way).
+    A real folder name is stored stripped. Atomic via save_layout."""
+    table = layout.setdefault("franchise_aliases", {})
+    table[variant.strip()] = folder.strip() if folder else None
+    save_layout(layout, path)
+    return layout
+
+
+def remove_franchise_alias(variant, layout, path=LAYOUT_PATH):
+    """Deletes the franchise alias for `variant`; franchise-level twin of
+    remove_series_alias. Key matched through _normalize_series_name -- the same
+    rule lookup_ci/resolve_franchise use to FIND it -- so it's removed by any
+    spelling that resolves it. Removes every key that normalizes to `variant`.
+    Absent key or missing table: clean no-op, file not rewritten. Emptied table
+    pruned."""
+    table = (layout or {}).get("franchise_aliases")
+    if not table:
+        return layout
+    target = _normalize_series_name(variant)
+    doomed = [k for k in table if _normalize_series_name(k) == target] if target else []
+    if not doomed:
+        return layout
+    for k in doomed:
+        del table[k]
+    if not table:
+        layout.pop("franchise_aliases", None)
+    save_layout(layout, path)
     return layout
 
 
