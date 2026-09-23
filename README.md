@@ -159,6 +159,15 @@ Built since the first release:
   UI: it reads and writes its file live (no cache), preserves the entries and
   comments it didn't touch, and a delete or rename is always an explicit click,
   never a silent side effect.
+- **Giving a series its own folder.** A series filed in the shared
+  `Others/Known Series/` folder can be promoted to a folder of its own from
+  the Character Folders tab, and a brand-new series can be created there
+  too — no hand-editing `layout.json`. Promotion takes every spelling that
+  used to reach the series' shortname and points it at the new folder, so
+  nothing keeps falling back to Known Series. Filenames never change, and
+  the shortname line stays as the legend for the suffix those files still
+  carry. Like the rest of the UI it moves no files: it tells you how many
+  images to drag across, and the Sync tab reconciles them.
 - **Live character and franchise validation in review.** As you edit an entry,
   the review UI checks each name against what's configured and flags a mismatch
   inline with a closest-match suggestion — a character that doesn't match a
@@ -190,10 +199,6 @@ Built since the first release:
 
 ## Roadmap
 
-- **Promoting a series out of the shortname folder.** Give a shortname-filed
-  series its own normal folder once it's earned one — alongside a plain "create
-  a new series" — so a growing series doesn't stay wedged in the shared
-  shortname space.
 - **Driving the pipeline from the UI.** Turn the ingest / backfill / resolve /
   archive stages, currently run from the CLI and the launcher scripts, into buttons
   so the whole loop runs without a terminal.

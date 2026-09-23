@@ -617,5 +617,146 @@ class SyncTabTest(SettingsTabsTestCase):
         self.assertEqual(set(self.review.on_sync_apply()), registered)
 
 
+# --------------------------------------------------------------------------- #
+# Tab A (cont.) -- Series folders: promote a known series into its own folder,
+# and create a fresh series folder. layout.json only; the shortname file is
+# never written and no archive file is moved.
+#
+# The sandbox shortname file (known_series_names.example.txt) carries
+# "VI = Verdant Isles", which is NOT a franchise in the fixture layout -- so it
+# routes to Others/Known Series today and is the promotion candidate here.
+# --------------------------------------------------------------------------- #
+class SeriesFoldersTabTest(SettingsTabsTestCase):
+    VI_FULL = "Verdant Isles"
+    VI_CODE = "VI"
+
+    def _sn_bytes(self):
+        return (self.tmp / "known_series_names.txt").read_bytes()
+
+    def _known_entry(self, key, override=False):
+        """An ARCHIVED entry filed under Others/Known Series with the _VI suffix."""
+        entry = {
+            "post_id": key,
+            "title": f"art {key}",
+            "status": "archived",
+            "archive_path": f"Others/Known Series/{key}_VI.jpg",
+            "franchise": [self.VI_FULL],
+            "character_guess": [],
+        }
+        if override:
+            entry["archive_override"] = "known_series"
+        self.review.manifest[key] = entry
+        return entry
+
+    def _pending(self, key, franchise):
+        entry = {
+            "post_id": key, "title": key, "status": "pending_review",
+            "franchise": [franchise], "character_guess": [],
+        }
+        self.review.manifest[key] = entry
+        return entry
+
+    # -- the pure scan -------------------------------------------------------
+
+    def test_scan_collects_tags_and_counts(self):
+        self._pending("t3_a", self.VI_FULL)
+        self._pending("t3_b", "verdant isles")   # spelling variant, same series
+        self._pending("t3_other", "Neon Ward")   # a real franchise -> excluded
+        self._known_entry("t3_c")
+        self._known_entry("t3_d", override=True)
+
+        tags, archived, overrides = self.review._series_promotion_scan(
+            self.review.manifest, self.review.layout, self.VI_CODE,
+            self.review._sn_entries() if hasattr(self.review, "_sn_entries")
+            else self.review.load_shortname_map(self.review.layout),
+            self.review.series_aliases,
+        )
+        # One distinct tag (the variant collapses), the franchise excluded.
+        self.assertEqual([t.casefold() for t in tags], [self.VI_FULL.casefold()])
+        self.assertEqual(archived, 2)
+        self.assertEqual(overrides, 1)
+
+    def test_scan_is_empty_for_a_blank_code(self):
+        self._pending("t3_a", self.VI_FULL)
+        tags, archived, overrides = self.review._series_promotion_scan(
+            self.review.manifest, self.review.layout, "",
+            self.review.load_shortname_map(self.review.layout),
+            self.review.series_aliases,
+        )
+        self.assertEqual((tags, archived, overrides), ([], 0, 0))
+
+    # -- preview writes nothing ---------------------------------------------
+
+    def test_preview_writes_nothing_and_describes_the_move(self):
+        self._pending("t3_a", self.VI_FULL)
+        self._known_entry("t3_c")
+        raw = self.layout_path.read_bytes()
+        sn = self._sn_bytes()
+
+        render = self.review.on_series_preview(self.VI_FULL, self.VI_FULL)
+        md = render[self.review.series_preview_md]
+
+        self.assertIn("will be created", md)
+        self.assertIn(self.VI_FULL, md)
+        self.assertIn("Sync", md)
+        self.assertIn("legend line is kept", md)
+        # Not a single byte written by a look.
+        self.assertEqual(self.layout_path.read_bytes(), raw)
+        self.assertEqual(self._sn_bytes(), sn)
+        self.assertNotIn(self.VI_FULL, self.review.layout["franchises"])
+
+    def test_preview_renders_a_validation_error_as_a_message(self):
+        render = self.review.on_series_preview(self.VI_FULL, "Crossover")
+        self.assertIn("⚠️", render[self.review.series_preview_md])
+
+    # -- apply is gated, and calls the engine -------------------------------
+
+    def test_apply_without_confirm_changes_nothing(self):
+        raw = self.layout_path.read_bytes()
+        render = self.review.on_series_apply(self.VI_FULL, self.VI_FULL, False)
+        self.assertIn("⚠️", render[self.review.series_status_md])
+        self.assertEqual(self.layout_path.read_bytes(), raw)
+        self.assertNotIn(self.VI_FULL, self.review.layout["franchises"])
+
+    def test_apply_creates_the_folder_and_routes_future_images(self):
+        self._pending("t3_a", self.VI_FULL)
+        self._known_entry("t3_c")
+        sn = self._sn_bytes()
+
+        render = self.review.on_series_apply(self.VI_FULL, self.VI_FULL, True)
+
+        # layout.json now has the flat folder, in memory and on disk.
+        self.assertEqual(self.review.layout["franchises"][self.VI_FULL], {"style": "flat"})
+        on_disk = json.loads(self.layout_path.read_text(encoding="utf-8"))
+        self.assertIn(self.VI_FULL, on_disk["franchises"])
+        # Future images route there instead of Others/Known Series.
+        import archive
+        result = archive.route_entry(
+            {"franchise": [self.VI_FULL], "character_guess": [], "crossover": False,
+             "title": ""},
+            self.review.layout, self.review.load_shortname_map(self.review.layout), None,
+        )
+        self.assertEqual(result.dest_dir, self.VI_FULL)
+        # The move count is surfaced, and the shortname file was never touched.
+        self.assertIn("1", render[self.review.series_status_md])
+        self.assertIn("Sync", render[self.review.series_status_md])
+        self.assertEqual(self._sn_bytes(), sn)
+
+    # -- create a fresh series ----------------------------------------------
+
+    def test_create_series_gated_and_creates_flat(self):
+        self.assertIn("⚠️", self.review.on_series_create("Brand New", False)
+                      [self.review.create_status_md])
+        self.assertNotIn("Brand New", self.review.layout["franchises"])
+
+        render = self.review.on_series_create("Brand New", True)
+        self.assertEqual(self.review.layout["franchises"]["Brand New"], {"style": "flat"})
+        self.assertIn("Brand New", render[self.review.create_status_md])
+
+    def test_create_series_shows_validation_error(self):
+        render = self.review.on_series_create("Neon Ward", True)  # already a franchise
+        self.assertIn("⚠️", render[self.review.create_status_md])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -380,6 +380,19 @@ Split into two slices:
     the only way to file an image under `Others/Known Series` when its
     franchise *does* have a folder — such an entry routes cleanly and never
     flags, so `resolve.py` can't reach it either.
+  - **Series folders (Character Folders tab)** — give a series currently
+    filed under `Others/Known Series/` its own flat folder, or create a
+    brand-new series folder, without hand-editing `layout.json`. Promotion
+    writes a flat `franchises` entry plus a `franchise_aliases` line for
+    every tag spelling that reached the series' shortname (keyed by the
+    CANONICAL tag, since resolve_franchise canonicalizes before reading the
+    alias table), so nothing keeps falling through to Known Series.
+    `shortname.py`'s create_series / promote_series (preview_series_promotion
+    for a dry run) own the writes: layout.json only, one atomic save_layout;
+    the shortname file is NEVER written — the `_CODE` legend stays the
+    permanent decoder for the suffix already-filed images carry. No file
+    under ARCHIVE_DIR moves; the UI reports how many archived images to drag
+    across, and the Sync tab reconciles them.
   - **Flag-resolution pass (`resolve.py`)** — a companion screen (not part of
     Slice 2's UI) that presents each `flag`ged `approved` entry one at a time
     and offers the fix scoped to why `archive.py` flagged it: map/create a

@@ -12,6 +12,7 @@ offer to learn an alias, and it must not import Slice 3a's routing engine to
 find out. The routing DECISIONS built on top of these (route_entry, the
 precedence ladder, Others_Group/Crossover) stay in archive.py.
 """
+import copy
 import json
 import os
 import re
@@ -590,6 +591,262 @@ def merge_character(franchise_folder: str, name: str, into: str, layout: dict,
     if changed:
         save_layout(layout, path)
     return layout
+
+
+# ---------------------------------------------------------------------------
+# Intent-level SERIES writers: "give a series filed under Others/Known Series
+# its own folder" / "create a brand-new series folder."
+#
+# The FRANCHISE-level twin of promote_character / merge_character: one named
+# intent, applied in memory, persisted through ONE save_layout (or none when
+# nothing changed), refusing incoherent input up front rather than leaving
+# layout.json half-written.
+#
+# Two decisions shape everything here and must NOT be re-litigated:
+#
+#   1. The shortname file is NEVER written by these functions. The
+#      "CODE = Full Name" line is the permanent decoder for the `_CODE` suffix
+#      every already-filed image keeps in its filename; deleting it would strip
+#      the meaning off those bytes on disk AND free the code for
+#      propose_shortname_code to hand to a DIFFERENT series, giving one suffix
+#      two meanings. Routing doesn't need it gone either -- route_entry resolves
+#      layout.json franchises BEFORE the shortname fallback, and the "File as
+#      Known Series" override still reuses the line. So promotion adds a
+#      franchise folder and leaves the legend exactly where it is.
+#
+#   2. No file on disk is moved or renamed. layout.json decides where FUTURE
+#      images file; the already-archived ones keep their `_CODE` filenames and
+#      are dragged across by the user in their file browser, then reconciled by
+#      the Sync tab (MOVED_OK). Nothing here writes inside ARCHIVE_DIR.
+#
+# Why the aliases are load-bearing: match_shortname matches a tag that is a
+# LEADING TOKEN of a longer full name ("NIKKE" reaches "NIKKE The Goddess of
+# Victory"), but resolve_franchise / lookup_ci do NOT -- they match a tag to a
+# folder only on the whole normalized name. So a tag like "NIKKE" that used to
+# reach the shortname entry by that leading-token rule does not resolve to a new
+# "NIKKE The Goddess of Victory" folder on its own; without an explicit
+# franchise_alias it would keep falling through to Others/Known Series. Each
+# promoted tag therefore gets a franchise_alias pointing at the folder.
+# ---------------------------------------------------------------------------
+
+_INVALID_FOLDER_CHARS = '/\\<>:"|?*'
+
+
+def _validate_new_series_folder(layout: dict, folder: str) -> str:
+    """Returns the stripped folder name, or raises ValueError when it can't be a
+    NEW flat franchise folder in `layout`. The checks, and why each matters:
+
+      - empty: there is no folder to create;
+      - contains a character Windows/Drive forbids in a path segment
+        (``/ \\ < > : " | ? *``), or ends with a dot or space: the name becomes
+        a real directory, so one the filesystem would reject (or silently trim)
+        must be refused here, not at move time;
+      - already a `franchises` key (lookup_ci, the same case-insensitive rule
+        routing uses): the folder already exists, so "create" is the wrong verb;
+      - the first path segment of any `special_folders` value: "Others",
+        "Crossover", "Wallpaper" and friends are reserved routing roots, and a
+        franchise sharing that name would collide with a special route;
+      - a `franchise_aliases` key (matched via _normalize_series_name) whose
+        value is anything OTHER than this same folder, INCLUDING an explicit
+        null: resolve_franchise consults franchise_aliases BEFORE franchises, so
+        such an alias would intercept the tag and send it elsewhere (or, for
+        null, flag it), leaving the new folder unreachable. The message names
+        the alias and its value and points at Settings -> Franchise aliases,
+        where it is retracted."""
+    stripped = (folder or "").strip()
+    if not stripped:
+        raise ValueError("Series folder name is empty.")
+    if any(ch in stripped for ch in _INVALID_FOLDER_CHARS):
+        raise ValueError(
+            f"{stripped!r} contains a character that a folder name can't hold "
+            f'(one of {_INVALID_FOLDER_CHARS}).'
+        )
+    if stripped.endswith((".", " ")):
+        raise ValueError(f"{stripped!r} can't end with a dot or a space.")
+
+    matched, _ = lookup_ci((layout or {}).get("franchises") or {}, stripped)
+    if matched is not None:
+        raise ValueError(f"A series folder {matched!r} already exists.")
+
+    folded = stripped.casefold()
+    for value in ((layout or {}).get("special_folders") or {}).values():
+        if not value:
+            continue
+        first_segment = str(value).strip("/").split("/")[0]
+        if first_segment.casefold() == folded:
+            raise ValueError(
+                f"{stripped!r} is reserved -- it is the {first_segment!r} "
+                "routing folder."
+            )
+
+    target = _normalize_series_name(stripped)
+    for key, value in ((layout or {}).get("franchise_aliases") or {}).items():
+        if _normalize_series_name(key) != target:
+            continue
+        if value is not None and same_series_name(value, stripped):
+            continue
+        shown = value if value is not None else "null"
+        raise ValueError(
+            f"{stripped!r} is already an alias ({key!r} -> {shown}) that would "
+            "intercept it. Remove it under Settings -> Franchise aliases first."
+        )
+
+    return stripped
+
+
+def create_series(folder: str, layout: dict, path: Path = LAYOUT_PATH) -> dict:
+    """Create a new flat franchise folder `folder` in `layout`, and return the
+    updated layout. Validates through _validate_new_series_folder (so a name the
+    filesystem would reject, or one colliding with an existing folder, a
+    reserved routing root, or an intercepting alias, is refused), then appends
+    ``"<folder>": {"style": "flat"}`` to `franchises` and persists via
+    save_layout.
+
+    Appended at the END so layout.json's hand-curated franchise order survives
+    -- the same reason save_layout never sorts keys. Flat only: this feature
+    files a created/promoted series directly under its own folder, with no
+    character subfolders (see the module header). Always a real change
+    (validation refuses a folder that already exists), so there is no no-op path
+    -- it either writes the new folder or raises."""
+    name = _validate_new_series_folder(layout, folder)
+    layout.setdefault("franchises", {})[name] = {"style": "flat"}
+    save_layout(layout, path)
+    return layout
+
+
+def _apply_series_promotion(layout: dict, code: str, full_name: str,
+                            into_folder: str, tags: list,
+                            series_aliases: Optional[dict]) -> dict:
+    """Pure in-memory core of the series promotion: hook every tag that used to
+    reach the shortname entry `code` onto a flat franchise folder, creating that
+    folder when it doesn't exist yet. NO I/O -- preview_series_promotion and
+    promote_series wrap it. Returns a report dict:
+
+        created       bool  -- a new flat folder was added
+        folder        str   -- the CONFIGURED franchise key files land in
+        aliases_added [(key, folder), ...]  -- franchise_aliases written
+        skipped       [(tag, reason), ...]  -- tags deliberately left alone
+        changed       bool  -- layout was mutated (a save is warranted)
+
+    `into_folder` may name an EXISTING franchise (used as-is; it must be flat,
+    else ValueError -- this feature files flat) or a NEW one (validated and
+    created flat). Either way `folder` in the report is the configured key, via
+    lookup_ci, exactly as franchise_folder_and_def re-keys it, so callers build
+    paths and messages on the real on-disk spelling.
+
+    For each tag in ``tags + [full_name]``, de-duplicated on
+    _normalize_series_name:
+      - if, AFTER the folder exists, resolve_franchise (re-keyed through
+        lookup_ci the way franchise_folder_and_def does) already lands the tag
+        on `folder`, nothing is done -- the folder's own identity match, or an
+        existing alias pointing at it, already routes the tag;
+      - else if the tag's canonical name is already a franchise_aliases key
+        (with ANY value, including null), it is left untouched and recorded in
+        `skipped`: an explicit alias the user wrote outranks inferred routing,
+        and silently overwriting it here would lose that intent;
+      - else a franchise_alias ``canonical-tag -> folder`` is added. The KEY is
+        the CANONICALIZED tag, never the raw tag: resolve_franchise canonicalizes
+        a tag through the series-alias store BEFORE consulting franchise_aliases,
+        so a raw-tag key that differed from its canonical form would never be
+        read.
+
+    Why the aliases are needed at all (see the module header): match_shortname
+    reaches the entry from a leading-token prefix of the full name, but
+    resolve_franchise does not, so a tag like "NIKKE" would keep falling through
+    to Others/Known Series unless an alias points it at the folder.
+
+    `code` is not written anywhere -- the shortname line stays as the permanent
+    `_CODE` decoder (decision 1 in the module header). It is in the signature so
+    the three entry points share one shape and callers can log which entry was
+    promoted."""
+    matched, franchise_def = lookup_ci((layout or {}).get("franchises") or {}, into_folder)
+    if matched is not None:
+        style = (franchise_def or {}).get("style")
+        if style != "flat":
+            raise ValueError(
+                f"{matched!r} is a {style!r} series, not flat -- this only files "
+                "a series into one flat folder."
+            )
+        folder = matched
+        created = False
+    else:
+        folder = _validate_new_series_folder(layout, into_folder)
+        layout.setdefault("franchises", {})[folder] = {"style": "flat"}
+        created = True
+
+    aliases_added = []
+    skipped = []
+    seen = set()
+    for tag in list(tags or []) + [full_name]:
+        tag = (tag or "").strip()
+        if not tag:
+            continue
+        tag_norm = _normalize_series_name(tag)
+        if not tag_norm or tag_norm in seen:
+            continue
+        seen.add(tag_norm)
+
+        landed, _ = franchise_folder_and_def(tag, layout, series_aliases)
+        if landed is not None and same_series_name(landed, folder):
+            continue
+
+        canonical = canonicalize_series(tag, series_aliases)
+        # lookup_ci reads franchise_aliases with _normalize_series_name, the
+        # same rule resolve_franchise uses -- so this finds exactly the alias
+        # that would intercept the tag.
+        existing_key, existing_val = lookup_ci(
+            (layout or {}).get("franchise_aliases") or {}, canonical
+        )
+        if existing_key is not None:
+            shown = existing_val if existing_val is not None else "null"
+            skipped.append((tag, f"already aliased to {shown}"))
+            continue
+
+        layout.setdefault("franchise_aliases", {})[canonical] = folder
+        aliases_added.append((canonical, folder))
+
+    return {
+        "created": created,
+        "folder": folder,
+        "aliases_added": aliases_added,
+        "skipped": skipped,
+        "changed": created or bool(aliases_added),
+    }
+
+
+def preview_series_promotion(layout: dict, code: str, full_name: str,
+                             into_folder: str, tags: list,
+                             series_aliases: Optional[dict]) -> dict:
+    """Dry-run of _apply_series_promotion on a DEEP COPY of `layout`, returning
+    the same report without touching the caller's layout or the disk. The review
+    UI calls this to describe an operation ("a new folder will be created",
+    "these spellings will file there", "these are left alone") before the user
+    commits. A ValueError (bad folder name, non-flat target) propagates
+    unchanged so the UI can render it as a message."""
+    return _apply_series_promotion(
+        copy.deepcopy(layout), code, full_name, into_folder, tags, series_aliases
+    )
+
+
+def promote_series(code: str, full_name: str, into_folder: str, tags: list,
+                   layout: dict, series_aliases: Optional[dict],
+                   path: Path = LAYOUT_PATH) -> dict:
+    """Apply the series promotion to the REAL `layout`, persisting through ONE
+    save_layout iff anything changed, and return the report from
+    _apply_series_promotion. Argument order mirrors promote_character (layout
+    near the end) rather than the core's (layout first), because this is the call
+    site the review UI holds.
+
+    No save when the report's `changed` is False -- every tag already routed to
+    the folder and no new folder was needed -- so re-applying can't churn
+    layout.json's mtime or reorder its hand-curated keys. A ValueError is raised
+    BEFORE any mutation (the folder-existence/flatness and name-validity checks
+    all run first), so a refused call leaves `layout` untouched, exactly as
+    promote_character does."""
+    report = _apply_series_promotion(layout, code, full_name, into_folder, tags, series_aliases)
+    if report["changed"]:
+        save_layout(layout, path)
+    return report
 
 
 def resolve_franchise(tag_name: str, layout: dict, series_aliases: Optional[dict] = None):

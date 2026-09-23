@@ -41,6 +41,7 @@ from imagemeta import (
     warm_image_meta,
 )
 from shortname import (
+    create_series,
     franchise_folder_and_def,
     is_alias_dismissed,
     is_group_routed,
@@ -52,7 +53,9 @@ from shortname import (
     match_shortname,
     merge_character,
     normalize_name_key,
+    preview_series_promotion,
     promote_character,
+    promote_series,
     remove_character_alias,
     remove_franchise_alias,
     remove_series_alias,
@@ -1869,6 +1872,239 @@ def on_character_merge(franchise, name, into):
 
 
 # ---------------------------------------------------------------------------
+# Character Folders tab: Series folders -- give a series filed under
+# Others/Known Series its own folder, or create a brand-new series folder.
+#
+# Both are layout.json ONLY (create_series / promote_series). The shortname file
+# is never written -- the "CODE = Full Name" legend stays as the permanent
+# decoder for the `_CODE` suffix already-filed images carry -- and no file under
+# ARCHIVE_DIR is moved: the user drags the archived images across in their file
+# browser and reconciles them on the Sync tab. So, exactly like promote/merge
+# above, every finished operation ends with a count of how many archived images
+# are still waiting to be moved.
+#
+# Outcome language only: the words "alias", "roster" and "shortname entry" never
+# reach the screen. A promoted series is one whose FUTURE images "file to
+# <folder>/"; the legend line that keeps old filenames decodable is "kept".
+# ---------------------------------------------------------------------------
+
+
+def _series_promotion_scan(manifest, layout, code, shortname_entries, series_aliases):
+    """Read-only survey of what promoting shortname `code` affects. Every input
+    is an argument (no module globals) so it is testable in isolation.
+
+    Returns (tags, archived_in_known, override_count):
+      - tags: the distinct primary-franchise tags (entry["franchise"][0]) across
+        every manifest entry, ANY status, that currently reach the shortname
+        entry `code` (match_shortname) AND do not resolve to a franchise folder
+        yet (franchise_folder_and_def is (None, None)). These are exactly the
+        tags that fall through to Others/Known Series today, and the ones
+        promote_series must alias onto the new folder.
+      - archived_in_known: how many ARCHIVED entries sit under
+        special_folders["others_known_series"] (sync._under, the Sync tab's own
+        comparison, reused so the two never disagree) whose primary tag matches
+        `code` -- the files the user still has to drag across after promoting.
+      - override_count: how many of THOSE were put there deliberately with
+        "File as Known Series" (archive_override == "known_series"), so the UI
+        can warn before the user moves them.
+
+    An empty/None `code` matches nothing: there is no legend to promote from, and
+    without this guard a None code would spuriously collect every tag that
+    matches no shortname at all (None == None)."""
+    if not code:
+        return [], 0, 0
+    known_root = (layout.get("special_folders") or {}).get("others_known_series") or ""
+    tags = []
+    archived_in_known = 0
+    override_count = 0
+    for entry in manifest.values():
+        if not isinstance(entry, dict):
+            continue
+        franchise_list = entry.get("franchise") or []
+        primary = franchise_list[0] if franchise_list else None
+        if not primary:
+            continue
+        if match_shortname(primary, shortname_entries, series_aliases) != code:
+            continue
+
+        folder, _ = franchise_folder_and_def(primary, layout, series_aliases)
+        if folder is None and not any(same_series_name(primary, seen) for seen in tags):
+            tags.append(primary)
+
+        if entry.get("status") == "archived":
+            rel = entry.get("archive_path")
+            if rel and sync._under(rel, known_root):
+                archived_in_known += 1
+                if entry.get("archive_override") == "known_series":
+                    override_count += 1
+    return tags, archived_in_known, override_count
+
+
+def _series_code_for(full_name, entries):
+    """The shortname code decoding `full_name`, or None. Identity is the full
+    name (same_series_name), the same rule the Shortnames settings panel uses."""
+    for code, full in entries:
+        if same_series_name(full, full_name):
+            return code
+    return None
+
+
+def _series_choices():
+    """The shortname lines as ("Full Name (CODE)", full_name) options, read LIVE
+    off disk. The value is the full name (the entry's identity), so a picked line
+    round-trips to its code through _series_code_for."""
+    return [(f"{full} ({code})", full) for code, full in load_shortname_map(layout)]
+
+
+def _series_confirm_label(full_name, folder):
+    folder = (folder or "").strip()
+    if full_name and folder:
+        return f"Future {full_name} images file to “{folder}/”"
+    return "Confirm before applying"
+
+
+def _series_move_line(count, override_count, code, folder, known_root):
+    """The move-then-Sync line every finished promotion ends with, plus the
+    on-purpose warning. Count only -- moving the files would be a write inside
+    ARCHIVE_DIR, which this process never does."""
+    if not count:
+        return f"No archived images are filed under `{known_root}/` for this series."
+    line = (f"**{count}** archived image(s) are in `{known_root}/` — their filenames "
+            f"end in `_{code}`. Move them into `{folder}/` in your file browser, "
+            f"then open the **Sync** tab.")
+    if override_count:
+        line += (f" **{override_count}** of them were filed there on purpose with "
+                 "“File as Known Series” — leave those if you want them kept there.")
+    return line
+
+
+def _series_render(selected=None, folder=None, preview="", status=""):
+    """Full repaint of the "Give a series its own folder" block as
+    {component: value}. Every render resets the confirm box to unticked so each
+    Apply needs a fresh confirmation."""
+    return {
+        series_dropdown: gr.update(choices=_series_choices(), value=selected),
+        series_folder_box: folder if folder is not None else (selected or ""),
+        series_preview_md: preview,
+        series_confirm_chk: gr.update(value=False,
+                                      label=_series_confirm_label(selected, folder)),
+        series_status_md: status,
+    }
+
+
+def _series_tab_open():
+    """Repopulate on tab open: refresh the dropdown off the live shortname file,
+    clear the rest. Selection is dropped because the folder box below is prefilled
+    from it and a stale selection would show a folder for a series the user isn't
+    looking at."""
+    return _series_render()
+
+
+def on_series_select(selected):
+    """Prefill the folder box with the full name when a line is picked; the user
+    edits it if they want a shorter folder name."""
+    return _series_render(selected=selected, folder=selected)
+
+
+def on_series_preview(selected, folder):
+    """Describe the promotion without writing anything: new-or-existing folder,
+    which spellings start filing there, which are left alone, how many archived
+    images must be moved, and that the legend line is kept. A ValueError (bad
+    folder name, non-flat target) renders as its message, never a traceback."""
+    if not selected:
+        return _series_render(selected, folder,
+                              status="⚠️ Pick a series line first.")
+    entries = load_shortname_map(layout)
+    code = _series_code_for(selected, entries)
+    tags, archived_in_known, override_count = _series_promotion_scan(
+        manifest, layout, code, entries, series_aliases
+    )
+    try:
+        report = preview_series_promotion(layout, code, selected, folder, tags, series_aliases)
+    except ValueError as exc:
+        return _series_render(selected, folder, preview=f"⚠️ {exc}")
+
+    dest = report["folder"]
+    lines = []
+    if report["created"]:
+        lines.append(f"A new folder **`{dest}/`** will be created.")
+    else:
+        lines.append(f"The existing folder **`{dest}/`** will be used.")
+
+    if report["aliases_added"]:
+        spellings = ", ".join(f"**{key}**" for key, _ in report["aliases_added"])
+        lines.append(f"These spellings will file there from now on: {spellings}.")
+    else:
+        lines.append("No new spellings needed — they already file there.")
+
+    if report["skipped"]:
+        left = "; ".join(f"**{tag}** ({reason})" for tag, reason in report["skipped"])
+        lines.append(f"Left alone: {left}.")
+
+    known_root = (layout.get("special_folders") or {}).get("others_known_series") or ""
+    lines.append(_series_move_line(archived_in_known, override_count, code, dest, known_root))
+    if code:
+        lines.append(f"The `{code} = {selected}` legend line is kept, so already-filed "
+                     "images keep decoding.")
+
+    return _series_render(selected, folder, preview="\n\n".join(lines))
+
+
+def on_series_apply(selected, folder, confirm):
+    """Commit the promotion, then show the same move-then-Sync count line. Gated
+    on the confirm box; a ValueError renders as its message."""
+    if not selected:
+        return _series_render(selected, folder, status="⚠️ Pick a series line first.")
+    if not confirm:
+        return _series_render(selected, folder,
+                              status="⚠️ Tick the confirmation box first — nothing changed.")
+    entries = load_shortname_map(layout)
+    code = _series_code_for(selected, entries)
+    tags, archived_in_known, override_count = _series_promotion_scan(
+        manifest, layout, code, entries, series_aliases
+    )
+    try:
+        report = promote_series(code, selected, folder, tags, layout, series_aliases)
+    except ValueError as exc:
+        return _series_render(selected, folder, status=f"⚠️ {exc}")
+
+    dest = report["folder"]
+    known_root = (layout.get("special_folders") or {}).get("others_known_series") or ""
+    move = _series_move_line(archived_in_known, override_count, code, dest, known_root)
+    return _series_render(
+        status=f"✅ Future **{selected}** images now file to `{dest}/`. {move}"
+    )
+
+
+# ---------- Create a new series (a fresh flat folder, no promotion) ----------
+
+def _create_series_render(name="", status=""):
+    return {
+        create_name_box: name,
+        create_confirm_chk: gr.update(value=False),
+        create_status_md: status,
+    }
+
+
+def on_series_create(name, confirm):
+    """Create a brand-new flat series folder. Gated on the confirm box; a
+    ValueError (bad name, collision, intercepting alias) renders as its message."""
+    if not confirm:
+        return _create_series_render(name,
+                                     status="⚠️ Tick the confirmation box first — nothing created.")
+    try:
+        create_series(name, layout)
+    except ValueError as exc:
+        return _create_series_render(name, status=f"⚠️ {exc}")
+    stripped = (name or "").strip()
+    return _create_series_render(
+        status=(f"✅ Future images tagged exactly **{stripped}** now file to "
+                f"`{stripped}/`. Other spellings can be added under "
+                "**Settings → Franchise aliases**.")
+    )
+
+
+# ---------------------------------------------------------------------------
 # Settings tab: Franchise aliases -- layout.json `franchise_aliases`, a FLAT
 # {variant: folder-or-null} map, edited through save_franchise_alias /
 # remove_franchise_alias.
@@ -2779,6 +3015,81 @@ with gr.Blocks(title="Oshiire review", analytics_enabled=False) as demo:
     # confirmation message (see settings_dropdown).
     char_franchise_dropdown.input(
         fn=on_character_select, inputs=[char_franchise_dropdown], outputs=char_outputs
+    )
+
+    # -- Series folders ------------------------------------------------------
+    # Static components (no @gr.render): unlike the character rows above, the
+    # controls here are a fixed set, so the ordinary render-dict pattern fits.
+    gr.Markdown("---")
+    gr.Markdown(
+        "### Series folders\n"
+        "Give a series that is currently filed under **Others/Known Series** its "
+        "own folder, or create a brand-new series folder. Both decide where "
+        "**future** images are filed — images already in the archive stay where "
+        "they are until you move them yourself, and each change tells you how "
+        "many that is."
+    )
+
+    with gr.Group():
+        gr.Markdown("#### Give a series its own folder")
+        series_dropdown = gr.Dropdown(
+            choices=_series_choices(), value=None, label="Full Name (CODE)",
+            filterable=True,
+            # Seeded here and refreshed on tab-open; custom values allowed for
+            # the same reason as the other dropdowns -- gr.update only repaints
+            # the client, so a value the server component wasn't built with is
+            # rejected on submit.
+            allow_custom_value=True,
+            info="Type to filter. Read live from the shortname file each time this tab opens.",
+        )
+        series_folder_box = gr.Textbox(
+            label="Folder name",
+            info="Prefilled with the full name — shorten it if you want a tidier folder.",
+        )
+        series_preview_md = gr.Markdown()
+        series_confirm_chk = gr.Checkbox(
+            value=False, label=_series_confirm_label(None, None)
+        )
+        with gr.Row():
+            series_preview_btn = gr.Button("Preview")
+            series_apply_btn = gr.Button("Apply", variant="primary")
+        series_status_md = gr.Markdown()
+
+        series_outputs = [series_dropdown, series_folder_box, series_preview_md,
+                          series_confirm_chk, series_status_md]
+
+    with gr.Group():
+        gr.Markdown("#### Create a new series")
+        gr.Markdown(
+            "Make a new folder for a series you collect but haven't filed yet. "
+            "Future images tagged with this exact name file straight into it."
+        )
+        create_name_box = gr.Textbox(label="Series folder name")
+        create_confirm_chk = gr.Checkbox(value=False, label="Create this series folder")
+        create_btn = gr.Button("Create", variant="primary")
+        create_status_md = gr.Markdown()
+
+        create_outputs = [create_name_box, create_confirm_chk, create_status_md]
+
+    # The shortname dropdown is live-read on every tab open (a second .select
+    # handler alongside the character panel's -- both repaint their own
+    # components).
+    char_tab.select(fn=_series_tab_open, outputs=series_outputs)
+    # .input(), not .change(): re-selecting the same line must not swallow a
+    # confirmation message (same rule as char_franchise_dropdown above).
+    series_dropdown.input(fn=on_series_select, inputs=[series_dropdown], outputs=series_outputs)
+    series_preview_btn.click(
+        fn=on_series_preview, inputs=[series_dropdown, series_folder_box],
+        outputs=series_outputs,
+    )
+    series_apply_btn.click(
+        fn=on_series_apply,
+        inputs=[series_dropdown, series_folder_box, series_confirm_chk],
+        outputs=series_outputs,
+    )
+    create_btn.click(
+        fn=on_series_create, inputs=[create_name_box, create_confirm_chk],
+        outputs=create_outputs,
     )
 
 
