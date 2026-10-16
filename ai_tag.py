@@ -5,9 +5,22 @@ must be invoked explicitly:  python ai_tag.py [--force]
 import argparse
 from pathlib import Path
 
-from ai_tagger import guess_franchise_and_character_ai
+from ai_tagger import guess_franchise_and_character_ai, model_is_cached
 from manifest import load_manifest, save_manifest
 from tag import print_table
+
+DOWNLOAD_NOTICE = "Downloading the AI tagging model (one time, about 450 MB)..."
+
+
+def _announce_download_if_needed():
+    """Say so once, in plain words, when the first tagging call is about to
+    download the model -- otherwise a first run looks frozen for minutes."""
+    try:
+        cached = model_is_cached()
+    except Exception:
+        return  # a cache check must never stop tagging
+    if not cached:
+        print(DOWNLOAD_NOTICE, flush=True)
 
 
 def _is_candidate(entry: dict, force: bool) -> bool:
@@ -24,12 +37,16 @@ def _is_candidate(entry: dict, force: bool) -> bool:
 
 def run_ai_tagging(manifest: dict, force: bool = False) -> list:
     tagged = []
+    announced = False
     for entry in manifest.values():
         if not _is_candidate(entry, force):
             continue
         local_path = entry.get("local_path")
         if not local_path or not Path(local_path).exists():
             continue  # can't run AI without the image; leave metadata result untouched
+        if not announced:  # before the tagger first loads the model
+            _announce_download_if_needed()
+            announced = True
 
         franchise_list, guess = guess_franchise_and_character_ai(
             local_path, entry.get("franchise", [])

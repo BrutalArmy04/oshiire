@@ -42,7 +42,11 @@ def setUpModule():
                     mock.patch.object(app.config, "load"),
                     mock.patch.object(app.config, "summary", return_value="config: (test)"),
                     mock.patch.object(app.config, "launch_environ", return_value=None),
-                    mock.patch.object(app.starters, "ensure_starters", return_value=[])):
+                    mock.patch.object(app.starters, "ensure_starters", return_value=[]),
+                    # Never open the real first-run window from a test.
+                    mock.patch.object(app.setup_window, "needs_setup", return_value=False),
+                    mock.patch.object(app.setup_window, "run_setup_window",
+                                      side_effect=AssertionError("setup window opened"))):
         patcher.start()
         _MODULE_PATCHES.append(patcher)
 
@@ -887,14 +891,119 @@ class ShowErrorWindowTest(unittest.TestCase):
     back to printing the message (which includes the reason, fix and log path)."""
 
     def test_falls_back_to_print_without_tkinter(self):
+        # No tkinter AND no system message box (non-Windows): print it.
         buf = io.StringIO()
         with mock.patch.dict(sys.modules, {"tkinter": None}), \
+             mock.patch.object(app, "_message_box_w", return_value=False), \
              contextlib.redirect_stdout(buf):
             app._show_error_window("numpy is too old", fix=app._NUMPY_FIX)
         printed = buf.getvalue()
         self.assertIn("numpy is too old", printed)
         self.assertIn(app._NUMPY_FIX, printed)
         self.assertIn("oshiire.log", printed)
+
+    def test_windows_message_box_before_print_without_tkinter(self):
+        buf = io.StringIO()
+        with mock.patch.dict(sys.modules, {"tkinter": None}), \
+             mock.patch.object(app, "_message_box_w", return_value=True) as box, \
+             contextlib.redirect_stdout(buf):
+            app._show_error_window("numpy is too old", fix=app._NUMPY_FIX)
+        box.assert_called_once()
+        self.assertIn("numpy is too old", box.call_args.args[0])
+        self.assertEqual(buf.getvalue(), "")  # shown in the box, so not printed
+
+    @unittest.skipUnless(sys.platform == "win32", "user32 is Windows-only")
+    def test_message_box_w_calls_user32_topmost_error(self):
+        import ctypes
+        fake = mock.MagicMock()
+        with mock.patch.object(ctypes, "windll", fake):
+            self.assertTrue(app._message_box_w("boom"))
+        args = fake.user32.MessageBoxW.call_args.args
+        self.assertEqual(args[1:3], ("boom", "Oshiire"))
+        self.assertEqual(args[3] & 0x10, 0x10)        # MB_ICONERROR
+        self.assertEqual(args[3] & 0x40000, 0x40000)  # MB_TOPMOST
+
+    def test_message_box_w_is_false_off_windows(self):
+        with mock.patch.object(app.sys, "platform", "linux"):
+            self.assertFalse(app._message_box_w("boom"))
+
+
+class SetupGateTest(unittest.TestCase):
+    """main(): numpy check -> first-run setup window -> mode dispatch. Cancel
+    exits 0 and starts nothing; Save/Skip carry straight on to Home; a bad numpy
+    never reaches the window; an answered setup never opens it."""
+
+    def setUp(self):
+        self._prev_cwd = os.getcwd()
+        self._prev_lock = app._lock
+
+    def tearDown(self):
+        os.chdir(self._prev_cwd)
+        app._lock = self._prev_lock
+
+    def _main(self, needs, outcome=None, numpy_reason=None):
+        seen = mock.Mock()
+        seen.check_numpy.return_value = numpy_reason
+        seen.needs_setup.return_value = needs
+        seen.run_setup_window.return_value = outcome
+        with mock.patch.object(app, "acquire_single_instance", return_value=object()), \
+             mock.patch.object(app.settings, "window_mode", return_value="browser"), \
+             mock.patch.object(app, "clear_recorded_port"), \
+             mock.patch.object(app, "_setup_stdio"), \
+             mock.patch.object(app, "_check_numpy", seen.check_numpy), \
+             mock.patch.object(app, "_show_error_window"), \
+             mock.patch.object(app.setup_window, "needs_setup", seen.needs_setup), \
+             mock.patch.object(app.setup_window, "run_setup_window", seen.run_setup_window), \
+             mock.patch.object(app, "_run_browser", seen.run_browser), \
+             mock.patch.object(app, "_run_native", seen.run_native), \
+             mock.patch("sys.exit", side_effect=SystemExit) as exit_, \
+             contextlib.redirect_stdout(io.StringIO()) as out:
+            raised = None
+            try:
+                app.main()
+            except SystemExit:
+                raised = exit_.call_args.args[0] if exit_.call_args.args else 0
+        names = [c[0] for c in seen.mock_calls if c[0] in (
+            "check_numpy", "needs_setup", "run_setup_window", "run_browser", "run_native")]
+        return names, raised, seen, out.getvalue()
+
+    def test_order_numpy_then_setup_then_dispatch(self):
+        names, raised, seen, _ = self._main(needs=True, outcome="saved")
+        self.assertIsNone(raised)
+        self.assertEqual(names, ["check_numpy", "needs_setup", "run_setup_window", "run_browser"])
+        seen.run_setup_window.assert_called_once_with("first")
+
+    def test_skip_carries_on_to_home(self):
+        names, raised, _, _ = self._main(needs=True, outcome="skipped")
+        self.assertIsNone(raised)
+        self.assertEqual(names[-1], "run_browser")
+
+    def test_unavailable_window_carries_on_to_home(self):
+        names, raised, _, _ = self._main(needs=True, outcome="unavailable")
+        self.assertIsNone(raised)
+        self.assertEqual(names[-1], "run_browser")
+
+    def test_cancel_exits_zero_and_starts_nothing(self):
+        before = sorted(p.name for p in _HOME.rglob("*"))
+        names, raised, seen, out = self._main(needs=True, outcome="cancelled")
+        self.assertEqual(raised, 0)
+        seen.run_browser.assert_not_called()
+        seen.run_native.assert_not_called()
+        self.assertIn("cancelled", out)
+        # main() itself wrote nothing (the window's Cancel writes nothing either --
+        # see test_setup_window); starters are stubbed in this module.
+        self.assertEqual(sorted(p.name for p in _HOME.rglob("*")), before)
+
+    def test_answered_setup_never_opens_the_window(self):
+        names, raised, seen, _ = self._main(needs=False)
+        seen.run_setup_window.assert_not_called()
+        self.assertEqual(names, ["check_numpy", "needs_setup", "run_browser"])
+
+    def test_bad_numpy_never_reaches_the_window(self):
+        names, raised, seen, _ = self._main(needs=True, outcome="saved",
+                                            numpy_reason="numpy 1.26 is too old")
+        self.assertEqual(raised, 1)
+        self.assertEqual(names, ["check_numpy"])
 
 
 class MainDataRootTest(unittest.TestCase):
@@ -960,7 +1069,9 @@ class MainDataRootTest(unittest.TestCase):
 
     def test_error_window_words_a_non_command_fix_plainly(self):
         out = io.StringIO()
-        with mock.patch.dict(sys.modules, {"tkinter": None}), contextlib.redirect_stdout(out):
+        with mock.patch.dict(sys.modules, {"tkinter": None}), \
+             mock.patch.object(app, "_message_box_w", return_value=False), \
+             contextlib.redirect_stdout(out):
             app._show_error_window("numpy is broken", fix="Download Oshiire again.",
                                    fix_is_command=False)
         printed = out.getvalue()

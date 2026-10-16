@@ -9,9 +9,46 @@ ai_tag.py for the selection logic. Never sets crossover or status.
 """
 import re
 
+from imgutils.tagging import wd14
 from imgutils.tagging.wd14 import get_wd14_tags
 
 from tagger import Guess
+
+# The one Hugging Face repo get_wd14_tags() loads its ONNX model from. imgutils
+# 0.19 has no constant for it -- it is a literal inside wd14._get_wd14_model --
+# so it is named once here, and tests/test_setup_window.py checks that literal
+# is still in imgutils' source so an upgrade can't silently change it.
+WD14_EMBEDDINGS_REPO = "deepghs/wd14_tagger_with_embeddings"
+
+
+def model_files(model_name=None):
+    """[(repo_id, filename), ...] -- exactly the files get_wd14_tags() downloads
+    for `model_name` (default: imgutils' own default model), built from imgutils'
+    constants: the ONNX model from the embeddings repo, the label CSV from the
+    model's own repo. Used to pre-download the model and to check the cache."""
+    name = model_name or wd14._DEFAULT_MODEL_NAME
+    folder = wd14.MODEL_NAMES[name]
+    return [
+        (WD14_EMBEDDINGS_REPO, f"{folder}/{wd14.MODEL_FILENAME}"),
+        (folder, wd14.LABEL_FILENAME),
+    ]
+
+
+def model_is_cached(model_name=None):
+    """True when every file of the default model is already in the local
+    Hugging Face cache (no network)."""
+    from huggingface_hub import try_to_load_from_cache
+    return all(isinstance(try_to_load_from_cache(repo, filename), str)
+               for repo, filename in model_files(model_name))
+
+
+def download_model(model_name=None):
+    """Download the default model's files into the Hugging Face cache, one at a
+    time. huggingface_hub locks each file, so a concurrent download of the same
+    file by ai_tag.py waits for this one and then reuses it."""
+    from huggingface_hub import hf_hub_download
+    return [hf_hub_download(repo_id=repo, filename=filename)
+            for repo, filename in model_files(model_name)]
 
 # Provisional thresholds, sanity-checked against real staging/ images during
 # Slice 4 Step 1 (confidence on genuine matches came back 0.98-0.99, well

@@ -107,13 +107,11 @@ _FEED_RE = re.compile(r"(feed=)[^&\s]+")
 _SESSION_RE = re.compile(r"(reddit_session=)[^&\s]+")
 _TOKEN_RE = re.compile(r"(token_v2=)[^&\s]+")
 _COOKIE_RE = re.compile(r"(Cookie:).*", re.IGNORECASE)
-# Values shorter than this are too generic to blanket-replace across a log line.
-_MIN_SECRET_LEN = 8
 
 
 def _secrets_from_env():
     """The literal secret VALUES to scrub from child output, read fresh from
-    .env: the feed= query token of REDDIT_SAVED_FEED_URL and every cookie value
+    the merged config (env > .env > data/config.env): the feed= query token of REDDIT_SAVED_FEED_URL and every cookie value
     in REDDIT_SESSION_COOKIE. Only values >= 8 chars are kept. This list is for
     redact() only -- it is never printed, logged, or yielded."""
     # Longest first, so a secret that contains another is masked whole.
@@ -391,11 +389,11 @@ def run_steps(steps, cancel, cancellable):
 
 
 # --------------------------------------------------------------------------- #
-# Availability -- read .env fresh every call; reasons never carry a secret value
+# Availability -- read settings fresh every call; reasons never carry a secret value
 # --------------------------------------------------------------------------- #
 @contextlib.contextmanager
-def _backfill_at_repo_root():
-    """Point backfill's relative CSV/STATE paths at REPO_ROOT so its own
+def _backfill_at_data_root():
+    """Point backfill's relative CSV/STATE paths at the data root (the cwd) so its own
     load_rows/load_state (the single source of truth for the cursor) read the
     right files even when cwd != REPO_ROOT."""
     old_csv, old_state = backfill.CSV_PATH, backfill.STATE_PATH
@@ -423,7 +421,7 @@ def backfill_available():
         return (False, "The duplicate index hasn't been built yet.")
     if not config.get("REDDIT_SESSION_COOKIE").strip():
         return (False, "Reddit login isn't set up.")
-    with _backfill_at_repo_root():
+    with _backfill_at_data_root():
         total = len(backfill.load_rows())
         next_row = backfill.load_state().get("next_row", 0)
     if next_row >= total:

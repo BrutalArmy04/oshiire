@@ -98,8 +98,9 @@ are gone. Modules:
   container may not render when later set `visible=True`: drive it by value or by
   class instead.
 - `::first-line` only works with `display:block` on the button (not flex).
-- The font URL `/gradio_api/file=assets/fonts/...` is relative to cwd, so
-  `Oshiire.bat`/`oshiire.sh` and `app.py` all chdir to the project root.
+- Font and userscript URLs are absolute (`_gradio_file_url`); the cwd is the
+  data root (`datahome.py`), not the app folder, so a relative
+  `/gradio_api/file=` path would resolve against the wrong folder.
 - A second root `.click` on a run button breaks the one-root-click contract;
   derive client state from the DOM instead (e.g. the "Running…" disabled button).
 - `_nav_to` rebuilds each page's `elem_classes` on every navigation, so a page's
@@ -121,13 +122,16 @@ are gone. Modules:
   Nothing else in the repo is exposed — see `_static_paths()` in `review.py`.
 
 ## Security rules (do not violate)
-- `.env` holds TWO secrets: `REDDIT_SAVED_FEED_URL` (a per-account feed token)
+- There are TWO secrets: `REDDIT_SAVED_FEED_URL` (a per-account feed token)
   and `REDDIT_SESSION_COOKIE` (a logged-in cookie string copied from the
   browser — whoever holds it is logged in as the account owner, so it is the
-  more dangerous of the two). Reference the feed URL as
-  `os.environ["REDDIT_SAVED_FEED_URL"]`; the cookie is read in exactly one
-  place, `useragent.build_headers`, and callers pass the built headers around
-  rather than the value. Never inline or log either.
+  more dangerous of the two). They can live in `.env` or in
+  `data/config.env` (written by the setup window via `config.save_setup`);
+  `config.py` merges env > .env > data/config.env. Reference the feed URL as
+  `os.environ["REDDIT_SAVED_FEED_URL"]`. The cookie is used for requests in
+  exactly one place, `useragent.build_headers`, and callers pass the built
+  headers around rather than the value; `config.secret_values()` also reads
+  it, only to redact job output. Never inline or log either.
 - `.env`, `staging/`, `archive/`, and `manifest.json` are gitignored and must
   stay that way. If you add a new file holding secrets or account-derived data,
   add it to `.gitignore` in the same change.
@@ -571,7 +575,7 @@ Hard rules:
    `skipped`/`auth_walled` entry). A gallery whose fetch fails or can't be
    parsed gets a retryable `skipped` placeholder instead (see the Dedup rule
    above). Skip anything already handled in the
-   manifest. Manifest lives at `staging/manifest.json`. No AI, no UI, no
+   manifest. Manifest lives at `manifest.json` (the data root; the repo root in a checkout). No AI, no UI, no
    archiving.
 1. Metadata tagging: set `franchise`, `character_guess` (list), `guess_confidence`,
    `guess_source` per the rules above, driven by an editable `subreddit_map.json`.

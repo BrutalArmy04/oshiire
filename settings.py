@@ -91,3 +91,18 @@ def save_window_mode(mode, path=SETTINGS_PATH):
 def save_theme(theme_value, path=SETTINGS_PATH):
     """Persist the appearance theme atomically (see _save_key)."""
     _save_key(THEME_KEY, theme_value, VALID_THEMES, path)
+
+
+# Set once the first-run setup window was answered (Save or Skip), so it stops
+# opening by itself even when the feed URL or archive folder is still missing.
+SETUP_DONE_KEY = "setup_done"
+
+
+def setup_done(path=SETTINGS_PATH):
+    """True only when the file holds "setup_done": true (a real bool)."""
+    return load_settings(path).get(SETUP_DONE_KEY) is True
+
+
+def save_setup_done(done=True, path=SETTINGS_PATH):
+    """Persist the setup_done flag atomically (see _save_key)."""
+    _save_key(SETUP_DONE_KEY, bool(done), (True, False), path)

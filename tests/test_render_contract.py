@@ -34,6 +34,7 @@ import tempfile
 import textwrap
 import time
 import unittest
+from unittest import mock
 from contextlib import contextmanager, redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -892,7 +893,8 @@ class RenderContractTest(unittest.TestCase):
     # -- Phase B: reload-after-every-manifest-job + lock ownership ------------
     def _job_script(self, name, body):
         """Write a temp script and return its ABSOLUTE path (jobs runs argv as
-        [sys.executable, <path>] with cwd=REPO_ROOT, so the path must be absolute)."""
+        [sys.executable, <path>] with cwd = the data root, so the path must be
+        absolute)."""
         path = Path(self._tmp) / name
         path.write_text(textwrap.dedent(body), encoding="utf-8")
         return str(path.resolve())
@@ -1194,6 +1196,12 @@ class RenderContractTest(unittest.TestCase):
         ungated = [review.menu_review_btn, review.menu_resolve_btn,
                    review.menu_archive_dryrun_btn, review.menu_archive_apply_btn,
                    review.menu_manage_btn, review.menu_history_btn]
+        # Its own reachable archive folder: the archive doors are only "always
+        # available" when ARCHIVE_DIR is set and reachable, and this test must
+        # not depend on the real .env providing one.
+        prev_archive_dir = review.archive_dir
+        review.archive_dir = Path(tempfile.mkdtemp(prefix="render-archive-"))
+        self.addCleanup(setattr, review, "archive_dir", prev_archive_dir)
         try:
             self.assertTrue(review.jobs.try_start("Backfill"))
             locked = review._menu_availability()
@@ -1325,6 +1333,52 @@ class RenderContractTest(unittest.TestCase):
             self.assertIn("Opening", msg)
         finally:
             review._reddit_username, webbrowser.open = prev_user, prev_open
+
+    def test_change_setup_spawns_at_most_one_child(self):
+        """Settings -> App "Change setup...": [child python, APP_DIR/setup_window.py,
+        --change] in the data root (cwd), one at a time; a finished child allows
+        a new one. Popen is a fake -- no window opens."""
+        review = self.review
+        prev = review._setup_proc
+        self.addCleanup(setattr, review, "_setup_proc", prev)
+        review._setup_proc = None
+        children = []
+
+        def fake_popen(argv, **kwargs):
+            child = mock.Mock()
+            child.poll.return_value = None  # still open
+            children.append((argv, kwargs, child))
+            return child
+
+        first = review._open_change_setup(popen=fake_popen)
+        second = review._open_change_setup(popen=fake_popen)
+        self.assertEqual(first, review.CHANGE_SETUP_MSG)
+        self.assertEqual(second, review.CHANGE_SETUP_MSG)
+        self.assertEqual(len(children), 1)  # the second click reused the open one
+        argv, kwargs, child = children[0]
+        self.assertEqual(argv, [review.jobs._child_python(),
+                                str(review.datahome.APP_DIR / "setup_window.py"), "--change"])
+        self.assertEqual(Path(kwargs["cwd"]).resolve(), Path(os.getcwd()).resolve())
+        # The pre-config environment (config.launch_environ, or os.environ when
+        # config was never loaded), so the child sees each setting's true source.
+        with mock.patch.object(review.config, "launch_environ", return_value={"ONLY": "pre"}):
+            env = review._change_setup_env()
+        self.assertEqual(env, {"ONLY": "pre", "PYTHONIOENCODING": "utf-8"})
+        child.poll.return_value = 0  # the window was closed
+        review._open_change_setup(popen=fake_popen)
+        self.assertEqual(len(children), 2)
+
+    def test_open_data_folder_opens_the_cwd(self):
+        review = self.review
+        opened = []
+        if sys.platform == "win32":
+            with mock.patch.object(review.os, "startfile", side_effect=opened.append, create=True):
+                message = review._open_data_folder()
+        else:
+            with mock.patch("subprocess.Popen", side_effect=lambda argv: opened.append(argv[-1])):
+                message = review._open_data_folder()
+        self.assertEqual([Path(p).resolve() for p in opened], [Path(os.getcwd()).resolve()])
+        self.assertIn("data folder", message)
 
     def test_only_the_userscript_is_served_besides_fonts(self):
         """set_static_paths exposes exactly the fonts dir and the one userscript

@@ -2116,7 +2116,7 @@ def on_ingest_run():
 
 
 def _reddit_username():
-    """REDDIT_USERNAME from .env, read fresh (never logged). '' when unset."""
+    """REDDIT_USERNAME from the merged config, read fresh (never logged). '' when unset."""
     return config.get("REDDIT_USERNAME").strip()
 
 
@@ -2139,7 +2139,8 @@ _USERSCRIPT_NAME = Path(_USERSCRIPT_PATH).name
 def _static_paths():
     """Files Gradio is allowed to serve: the bundled fonts, and the unsave
     userscript -- that ONE file, so the Free-up-space page can hand it to the
-    browser's userscript extension at /gradio_api/file=oshiire_unsave.user.js.
+    browser's userscript extension at its absolute /gradio_api/file= URL
+    (_gradio_file_url).
     Nothing else in the repo is exposed."""
     root = Path(__file__).resolve().parent
     return [str(root / "assets" / "fonts"), _USERSCRIPT_PATH]
@@ -2202,6 +2203,62 @@ def _reveal_unsave_list():
     if target.exists():
         return "Opened the folder with **unsave_list.json** selected."
     return "No list yet — run **Make the list** first. Opened the `data` folder."
+
+
+CHANGE_SETUP_MSG = ("The setup window is open. Changes take effect the next time you "
+                    "start Oshiire.")
+
+# The one "Change setup" child, kept so a second click never opens a second window.
+_setup_proc = None
+
+
+def _change_setup_env():
+    """The environment for the setup child: the process environment from BEFORE
+    config.load() copied file values into it (config.launch_environ), so the
+    child reads .env/config.env itself and shows each setting's true source. A
+    jobs._child_env() copy would carry every merged value as if it were a real
+    environment variable, and the window would show them all as read-only."""
+    env = config.launch_environ()
+    env = dict(os.environ) if env is None else env
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
+def _open_change_setup(popen=None):
+    """Settings -> App: open the setup window in its own process (it is a Tk
+    window, and this process belongs to gradio). At most one at a time."""
+    global _setup_proc
+    import subprocess
+    if _setup_proc is not None and _setup_proc.poll() is None:
+        return CHANGE_SETUP_MSG
+    popen = popen or subprocess.Popen
+    kwargs = {"cwd": str(Path.cwd()), "env": _change_setup_env(),
+              "stdin": subprocess.DEVNULL}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    try:
+        _setup_proc = popen(
+            [jobs._child_python(), str(datahome.APP_DIR / "setup_window.py"), "--change"],
+            **kwargs)
+    except OSError as exc:
+        return f"Couldn't open the setup window ({type(exc).__name__})."
+    return CHANGE_SETUP_MSG
+
+
+def _open_data_folder():
+    """Home ? panel: show the data root (the cwd) in the file manager."""
+    import subprocess
+    folder = Path.cwd()
+    try:
+        if sys.platform == "win32":
+            os.startfile(str(folder))
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(folder)])
+        else:
+            subprocess.Popen(["xdg-open", str(folder)])
+    except Exception:
+        return f"Couldn't open it automatically. Oshiire's data folder is `{folder}`."
+    return f"Opened Oshiire's data folder: `{folder}`"
 
 
 def _open_userscript():
@@ -4510,6 +4567,9 @@ with gr.Blocks(title="Oshiire", analytics_enabled=False, delete_cache=(86400, 86
      help_state = gr.State(False)
      with gr.Column(elem_id="home-help", elem_classes=["page-hidden"]) as help_panel:
         help_md = gr.Markdown(HELP_MD)
+        # Where the manifest, staging/ and data/ live (the data root).
+        data_folder_btn = gr.Button("Open data folder", elem_classes=["tool"], size="sm")
+        data_folder_md = gr.Markdown("")
 
      with gr.Column(elem_classes=["closet"]):
         # Shelf 1 -- "Coming in": Ingest + Backfill stacked on the left, the big
@@ -5497,6 +5557,12 @@ with gr.Blocks(title="Oshiire", analytics_enabled=False, delete_cache=(86400, 86
         app_theme_save_btn = gr.Button("Save", variant="primary", interactive=False)
         app_theme_status_md = gr.Markdown("")
 
+        # The feed link, archive folder and username, in the setup window
+        # (setup_window.py --change, its own process).
+        change_setup_btn = gr.Button("Change setup...")
+        change_setup_md = gr.Markdown("")
+        change_setup_btn.click(fn=_open_change_setup, outputs=[change_setup_md])
+
         app_outputs = [app_window_radio, app_save_btn, app_status_md,
                        app_theme_radio, app_theme_save_btn, app_theme_status_md]
         # Re-read the file whenever the panel is opened, so the radios reflect
@@ -5562,6 +5628,7 @@ with gr.Blocks(title="Oshiire", analytics_enabled=False, delete_cache=(86400, 86
   job_progress_btn.click(fn=_show_progress, outputs=nav_outputs)
   # "?" toggles the help panel.
   help_btn.click(fn=_toggle_help, inputs=[help_state], outputs=[help_panel, help_state])
+  data_folder_btn.click(fn=_open_data_folder, outputs=[data_folder_md])
   # Quit (browser mode): refuse while a job runs, else stop the server cleanly.
   # When it was the "stopped" response, swap the page for a static goodbye so the
   # closing server leaves no live UI trying to reconnect.
@@ -5711,7 +5778,8 @@ def launch_app(inbrowser=True, block=True) -> str:
     """
     # Allowlist the two things gradio may serve (see _static_paths): the bundled
     # font files (assets/fonts/), which the @font-face rules reference as
-    # /gradio_api/file=assets/fonts/<name>.woff2 (relative to cwd), and the one
+    # /gradio_api/file=assets/fonts/<name>.woff2 (by absolute path; the cwd is
+    # the data root), and the one
     # unsave userscript the Free up saved space page hands to the browser. 100%
     # local; no remote web-font host, no network.
     gr.set_static_paths(_static_paths())

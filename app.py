@@ -12,8 +12,8 @@ The heavy import (review.py runs its startup hashing at import time) happens in
 pywebview's worker thread via _boot(), so the window paints the LOADING_HTML
 placeholder immediately instead of a blank frame.
 
-No secret ever reaches this file: it imports review (which owns the manifest and
-layout) and jobs (via review.jobs) but never reads .env itself.
+It never prints a secret: config.load() merges .env/config.env into the
+environment, and config.summary() logs key names only.
 
 Developer use only: set the environment variable OSHIIRE_DEBUG=1 to launch with
 WebView2's developer tools (devtools) enabled -- this passes debug=True to
@@ -32,6 +32,7 @@ from pathlib import Path
 import config
 import datahome
 import settings
+import setup_window
 import starters
 from instance import (
     acquire_single_instance,
@@ -1008,16 +1009,34 @@ def _show_error_window(reason, fix=None, log_path=_LOG_PATH, fix_is_command=True
         messagebox.showerror("Oshiire", message)
         root.destroy()
     except Exception:
+        # No tkinter (or no display): on Windows the plain system message box
+        # still works, so a startup failure is never silent under pythonw.
+        if _message_box_w(message):
+            return
         try:
             print(message)
         except Exception:
             pass
 
 
+def _message_box_w(message):
+    """Windows-only fallback dialog via user32.MessageBoxW (ctypes, no Tk).
+    Returns True when it was shown."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        MB_ICONERROR, MB_TOPMOST = 0x10, 0x40000
+        ctypes.windll.user32.MessageBoxW(None, message, "Oshiire", MB_ICONERROR | MB_TOPMOST)
+        return True
+    except Exception:
+        return False
+
+
 def main():
     # A desktop shortcut may launch us with a different "Start in" folder, so
-    # anchor the cwd on this file's directory -- manifest.json, data/, .env and
-    # data/settings.json are all resolved relative to it.
+    # anchor the cwd on the data root (datahome.py) -- manifest.json, data/ and
+    # data/settings.json resolve relative to it; app files go through APP_DIR.
     # The data root (datahome.py) IS the cwd from here on: the app folder in a
     # git checkout, the per-user data folder in a release, or OSHIIRE_HOME.
     root = datahome.data_root()
@@ -1069,6 +1088,19 @@ def main():
         print(f"Oshiire startup check failed: {reason}")
         _show_error_window(reason, fix=_NUMPY_FIX, fix_is_command=_NUMPY_FIX_IS_COMMAND)
         sys.exit(1)
+
+    # First run: no feed link / archive folder yet and the setup window was
+    # never answered. It runs in-process and tears Tk down completely before
+    # returning, so pywebview (native mode) starts on a clean GUI thread.
+    if setup_window.needs_setup():
+        outcome = setup_window.run_setup_window("first")
+        if outcome == setup_window.RESULT_CANCELLED:
+            print("Setup was cancelled; Oshiire is not starting.")
+            sys.exit(0)
+        # saved / skipped: save_setup already refreshed os.environ, so Home
+        # sees the new settings with no restart. unavailable (no tkinter or no
+        # display): carry on to Home, which says what isn't set up.
+        print(f"Setup window: {outcome}")
 
     if mode == "native":
         _run_native(lock)

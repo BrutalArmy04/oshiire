@@ -251,7 +251,7 @@ class LockTest(unittest.TestCase):
 
 class SecretsTest(unittest.TestCase):
     """_secrets_from_env + the literal-secret arm of redact, against a sandboxed
-    REPO_ROOT/.env."""
+    data root's .env (the cwd; config_sandbox hides the real app folder)."""
 
     def setUp(self):
         # The sandbox is the DATA ROOT (cwd), so its .env is the data-root .env;
@@ -296,11 +296,12 @@ class SecretsTest(unittest.TestCase):
 
 
 class AvailabilityTest(unittest.TestCase):
-    """ingest_available / backfill_available against a sandboxed REPO_ROOT.
+    """ingest_available / backfill_available against a sandboxed data root.
 
-    jobs reads .env fresh via dotenv_values(REPO_ROOT/.env) and resolves the CSV,
-    index DB and cursor relative to REPO_ROOT, so pointing REPO_ROOT at a temp
-    tree exercises every reason branch without touching the real project.
+    jobs reads settings fresh through config (the data root's .env first) and
+    resolves the CSV, index DB and cursor relative to the data root (the cwd), so
+    making a temp tree the data root exercises every reason branch without
+    touching the real project.
     """
     FEED_SECRET = "FEEDTOKEN_do_not_leak_abc123"
     COOKIE_SECRET = "COOKIE_do_not_leak_xyz789"
