@@ -13,6 +13,36 @@ feed, fetch post pages, and download images).
 **Setup & usage:** see [docs/SETUP.md](docs/SETUP.md).
 **Reaching saves the RSS feed can't see:** see [docs/BACKFILL.md](docs/BACKFILL.md).
 
+## Using it
+
+It's **one app**. Double-click **`Oshiire.bat`** (Windows) or **`oshiire.sh`**
+(Linux/macOS) and it opens in your **web browser** by default. Prefer its own
+window instead, or set Light / Dark / Match system, under **Manage → Settings →
+App** (stored in `data/settings.json`). In browser mode, **Quit Oshiire** in the
+header stops it; in a window, closing the window quits. A second double-click
+while it's already running just opens another tab (browser) or focuses the
+window.
+
+Everything is driven from the **home menu**, no terminal:
+
+- **Coming in** — **Ingest** (fetch new saves from your feed), **Backfill**
+  (work through older saves from the data export, a batch at a time, with a
+  Stop button), and the big **Review** door (approve / fix / reject each image
+  before it's filed). AI tagging runs automatically at the end of Ingest and
+  Backfill.
+- **Putting away** — **Preview filing** (show where every accepted image would
+  go; moves nothing), **File images** (actually move them into the archive,
+  behind a confirmation checkbox that you've read the preview), and **Resolve**
+  (place the ones filing couldn't).
+- **History** and **Manage** sit in the header. Manage holds the Character
+  Folders and Sync tabs, the Settings editors (including the **App** tab above),
+  and **Free up saved space** (drain posts Oshiire has already captured from
+  Reddit's capped saved listing).
+
+If the archive folder isn't reachable (e.g. Google Drive isn't running), the
+home board says so and the Putting-away doors wait; fix it and click **Check
+again**.
+
 ## How it works
 
 ```
@@ -41,7 +71,9 @@ The backfill subsystem is five modules:
   art.
 - **`export_unsave_list.py`** + **`oshiire_unsave.user.js`** — build a whitelist
   of provably-captured posts, and bulk-unsave only those from your own browser,
-  to free headroom in Reddit's capped saved listing. Dry-run by default.
+  to free headroom in Reddit's capped saved listing. Dry-run by default. The
+  in-app **Free up saved space** page (under **Manage**) drives the whole thing;
+  these are the pieces it runs, still usable by hand.
 
 Two more support the daily loop: **`imagemeta.py`** (perceptual-hash cache and
 the duplicate lookup the review UI shows) and **`history.py`** (a read-only
@@ -81,29 +113,47 @@ A few design decisions matter more than the individual scripts:
 
 ## Screenshots
 
-![review.py mid-review](screenshots/review.jpg)
-`review.py` mid-review: a cleanly auto-tagged entry — character and franchise
-filled in from the subreddit map at high confidence, no edits needed.
+Screenshots are from my own archive, except Free up saved space, which uses the example data.
 
-![Subreddit-mapping confirm panel](screenshots/confirm-panel.jpg)
-The subreddit-mapping confirm panel: a new subreddit→franchise/character
-mapping is never learned silently — Accept is blocked (note the greyed-out
-action buttons) until the user confirms whether, and how, to remember it.
+<p align="center">
+  <img src="screenshots/01-home-light.jpg" width="49%" alt="Home menu (light)">
+  <img src="screenshots/02-home-dark.jpg" width="49%" alt="Home menu (dark)">
+</p>
 
-![archive.py dry-run output](screenshots/dry-run.jpg)
-`archive.py` dry-run output: nothing has moved yet — the planned-moves table
-shows nested/flat/shortname routing, alias resolution, a wallpaper copy, and
-the special `Others/` destinations, all before `--apply` touches a file.
+The **home menu**, light and dark — every stage launches from here (**Coming
+in**: Ingest, Backfill, Review; **Putting away**: Preview filing, File images,
+Resolve; History and Manage in the header). Appearance is set in Manage →
+Settings → App.
 
-![resolve.py flagged entry](screenshots/resolve.jpg)
-`resolve.py`, one flagged entry, with the resolution options (map to an
-existing folder, create a new one, or route to Unknown Sauce) scoped to why
-it was flagged.
+![Review](screenshots/03-review.jpg)
+**Review** — approve, fix, or reject each image one at a time before anything is
+filed.
+
+![Subreddit-mapping confirm](screenshots/04-review-confirm-subreddit.jpg)
+The subreddit-mapping confirm step — a new subreddit→franchise/character mapping
+is only remembered once you explicitly confirm it; Accept waits until you do.
+
+![Preview filing](screenshots/05-preview-filing.jpg)
+**Preview filing** — the dry run that shows where every accepted image would go.
+It moves nothing; it's what you read before **File images**.
+
+![File images](screenshots/06-file-images-done.jpg)
+**File images** — the actual move into the archive, gated behind a confirmation
+checkbox so it never runs by accident.
+
+![Settings, rename guard](screenshots/07-settings-rename-guard.jpg)
+**Manage → Settings**: edit the config files from the app. Changing an entry's
+name becomes an explicit Rename button, never a silent rename, and a name that
+already exists is refused.
+
+![Free up saved space](screenshots/free-up-space.png)
+**Free up saved space** (under **Manage**) — builds the unsave list and walks the
+browser steps that free headroom in Reddit's capped saved listing.
 
 ## Tech stack
 
-- **Python 3.14** — what the project is developed and run on; the `.bat`
-  launchers invoke a `.venv-win` built with it. Nothing in the *syntax* needs it
+- **Python 3.14** — what the project is developed and run on; `Oshiire.bat`
+  invokes a `.venv-win` built with it. Nothing in the *syntax* needs it
   (the highest requirement anywhere is `int.bit_count()`, 3.10+), but the AI
   tagger, the perceptual-hash tooling and the review UI have only ever been
   exercised on 3.14, so anything older is untested and unsupported. 3.13+ needs
@@ -120,8 +170,13 @@ it was flagged.
   way left to read a saved list without going through Reddit's
   third-party-app approval process.
 - **AI tagger:** `dghs-imgutils` (WD14) + `onnxruntime`, local inference only.
-- **Review/resolve UI:** `gradio`.
+- **Review/resolve UI:** `gradio` (pinned to 6.19.0).
 - **Config:** `python-dotenv`.
+
+`requirements.txt` is everything needed to **run** Oshiire. A separate
+`requirements-dev.txt` (Playwright, fonttools) is only for **contributors** —
+running the opt-in end-to-end test or rebuilding the bundled fonts — and is not
+needed for normal use. Install is covered in [docs/SETUP.md](docs/SETUP.md).
 
 ## Status
 
@@ -157,8 +212,9 @@ Built since the first release:
   character aliases, series aliases, and the shortname file — each able to add,
   rename, or retract an entry, and each holding the same line as the rest of the
   UI: it reads and writes its file live (no cache), preserves the entries and
-  comments it didn't touch, and a delete or rename is always an explicit click,
-  never a silent side effect.
+  comments it didn't touch, and — the rename guard — a delete or rename is
+  always an explicit, labelled click, never a silent side effect (typing a name
+  that's already taken refuses rather than overwriting it).
 - **Giving a series its own folder.** A series filed in the shared
   `Others/Known Series/` folder can be promoted to a folder of its own from
   the Character Folders tab, and a brand-new series can be created there
@@ -178,9 +234,18 @@ Built since the first release:
   check stays quiet where a non-match is expected (crossover, OC, a group shot);
   the franchise check runs on every franchise you type, including each one on a
   crossover.
-- **`.sh` launchers for Linux/macOS**, mirroring the Windows set one stage for
-  one stage. The two now live side by side in `launchers-bat/` and
-  `launchers-sh/`.
+- **The home menu — the whole pipeline from the app.** Ingest, Backfill,
+  Preview filing, File images and Resolve run as buttons from a one-screen menu
+  (Coming in / Putting away), each with a live job log and a result page — no
+  terminal and no launcher scripts. AI tagging runs automatically at the end of
+  Ingest and Backfill.
+- **Launch modes and dark mode.** Opens in your browser by default or in its own
+  native window, and follows a Light / Dark / Match-system appearance — both set
+  in Manage → Settings → App and remembered in `data/settings.json`. A
+  single-instance lock means a second launch opens (browser) or focuses (window)
+  the running copy instead of starting a rival.
+- **History thumbnail cache.** The read-only History browser renders from a
+  local thumbnail cache (`data/thumbs/`), so it stays fast over a large archive.
 
 ## Known limitations
 
@@ -188,26 +253,27 @@ Built since the first release:
   `&limit=100`) with no pagination, and Reddit's saved *listing* itself caps out
   at ~1,000 items — past which new saves are stored but never surface in either.
   **Both are worked around rather than open:** `backfill.py` reaches the full
-  history through the data export, and the drain tooling frees listing headroom
-  so the feed keeps working. What remains is that the workaround is a periodic
-  chore rather than automatic — the export has to be requested by hand, the
-  sweep is deliberately slow to stay polite, and draining is a browser step you
-  supervise. See [docs/BACKFILL.md](docs/BACKFILL.md).
+  history through the data export, and the **Free up saved space** page (under
+  **Manage**) drives the drain that frees listing headroom so the feed keeps
+  working. What remains is that the workaround is a periodic chore rather than
+  automatic — the export has to be requested by hand, the sweep is deliberately
+  slow to stay polite, and draining is a browser step you supervise. See
+  [docs/BACKFILL.md](docs/BACKFILL.md).
 - The owned/uncertain/new dedup thresholds ship as constants measured against
   one dense archive. A sparser archive has a different noise floor and should
   re-measure with `calibrate.py` rather than inherit them.
 
 ## Roadmap
 
-- **Driving the pipeline from the UI.** Turn the ingest / backfill / resolve /
-  archive stages, currently run from the CLI and the launcher scripts, into buttons
-  so the whole loop runs without a terminal.
 - **A second Reddit account.** Read a second saved feed into the same archive,
   deduplicated against the one namespace the manifest, tombstones, and hash
   index already share.
 - **Upscaling under-sized art.** Flag, and optionally upscale, archived images
   below a long-edge threshold (~1920px) to raise the archive's quality floor.
 - Additional ingesters (local folder import, Pixiv bookmarks).
+
+Also open: a button to re-run AI tagging on demand (today it runs automatically
+after Ingest and Backfill).
 
 
 ## Design doc

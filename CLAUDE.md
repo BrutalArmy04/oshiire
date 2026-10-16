@@ -7,8 +7,6 @@ a local AI tagger (fallback), then presents each image in a small web UI for
 human approve/edit/reject before filing it into a sorted archive.
 Human-in-the-loop: nothing reaches the final archive without explicit approval.
  
-Full design: see `docs/blueprint.md`.
- 
 ## Ingestion approach (important — read before writing ingestion code)
 - Reddit disabled self-serve API app creation, so this project does NOT use
   `praw` or the Data API. Ingestion is via Reddit's private saved-posts RSS/Atom
@@ -34,8 +32,9 @@ Full design: see `docs/blueprint.md`.
 - The feed returns only recent saves, not full history. Design for incremental
   polling ("catch new saves"), not a one-shot full-history dump.
 ## Tech stack
-- Python 3.14. This is what the project is developed and run on — every `.bat`
-  launcher invokes a `.venv-win` built with it, and it is the only interpreter
+- Python 3.14. This is what the project is developed and run on — `Oshiire.bat`
+  invokes a `.venv-win` built with it (pythonw for the app, the sibling
+  python.exe for the pipeline child processes), and it is the only interpreter
   the AI tagger, the perceptual-hash tooling and the review UI have ever been
   exercised against. Nothing in the SYNTAX needs it (the highest requirement
   anywhere is `int.bit_count()`, 3.10+); the floor is an untested-below line,
@@ -47,8 +46,80 @@ Full design: see `docs/blueprint.md`.
   the login wall even with a valid cookie, because the deciding factor is the
   TLS/HTTP2 fingerprint)
 - AI tagger: WD14 via `imgutils` (installed only when Slice 4 begins)
-- UI: `gradio`
+- UI: `gradio` (pinned 6.19.0) — one app, no launcher scripts
 - Config/secrets: `python-dotenv`
+- Dev-only (contributors): `playwright` + `fonttools` in `requirements-dev.txt`
+  (the opt-in end-to-end test and the font build); never in `requirements.txt`.
+
+## App & UI architecture (the home-menu arc)
+The pipeline is one app, driven from a home menu — the numbered launcher scripts
+are gone. Modules:
+- `app.py` — the desktop entry point. Reads `settings.window_mode()`, takes the
+  single-instance lock, then opens in the browser (default) or a native pywebview
+  window. Falls back to the browser if pywebview/WebView2 can't start. A second
+  launch opens a tab at the running port (browser) or says it's already open
+  (window). Browser mode has a "Quit Oshiire" header button; window mode hides
+  it (closing the window quits). `Oshiire.bat`/`oshiire.sh` just launch `app.py`.
+- `review.py` — **the whole UI** (one `gr.Blocks`): Home menu, Review, the job
+  pages (Ingest / Backfill / Preview filing [archive dry run] / File images
+  [archive apply]), Manage (Character Folders, Sync, Settings with five config
+  editors + the App tab), and History and Resolve built in-place from
+  `history.py` / `resolve.py`. `launch_app()` builds the themed URL and records
+  the bound port. Also runnable standalone (`python review.py`, browser).
+- `jobs.py` — runs the pipeline CLIs (ingest/backfill/archive/…) as child
+  processes and streams redacted output to the job pages. No gradio import. The
+  single-job lock lives here; the menu greys out while a job runs.
+- `settings.py` — `data/settings.json` ({"window": …, "theme": …}); missing/bad
+  → safe defaults ("browser"/"system"). The ONLY file the app writes as
+  preferences; `.env` is never written. No gradio import.
+- `instance.py` — the single-instance lock, and it records the bound server port
+  in `data/oshiire.lock` (locked byte beyond EOF so a second process can read the
+  port while the lock is held).
+- `assets/fonts/` — bundled web fonts, served via `gr.set_static_paths`; the UI
+  is all local, no remote font host.
+- Pages stay mounted and are shown/hidden with the `.page-hidden` CSS class, not
+  `visible=` (see gotchas). Colour is driven by role tokens on `:root` with a
+  `.dark` override; gradio's own theme vars are remapped to those tokens.
+
+## Running the tests
+- Full suite: `python -m unittest discover -s tests` (the opt-in e2e test is
+  skipped unless `OSHIIRE_E2E=1`).
+- The end-to-end Quit test (`tests/test_quit_e2e.py`) is opt-in and Windows-only:
+  `set OSHIIRE_E2E=1 && python -m unittest tests.test_quit_e2e`. It needs
+  `requirements-dev.txt` (Playwright) and builds a sandbox from the committed
+  `*.example*` files — never the real data.
+
+## Gradio 6.19 / WebView gotchas (learned the hard way)
+- `gr.Button` `elem_classes` land on the `<button>` itself — target `.door`, not
+  `.door button`.
+- Never hide pages/containers with `visible=` (it unmounts/remounts and leaves
+  WebView2 drawing black frames): use the `.page-hidden` class.
+- A component built `visible=False` inside an always-mounted, CSS-hidden
+  container may not render when later set `visible=True`: drive it by value or by
+  class instead.
+- `::first-line` only works with `display:block` on the button (not flex).
+- The font URL `/gradio_api/file=assets/fonts/...` is relative to cwd, so
+  `Oshiire.bat`/`oshiire.sh` and `app.py` all chdir to the project root.
+- A second root `.click` on a run button breaks the one-root-click contract;
+  derive client state from the DOM instead (e.g. the "Running…" disabled button).
+- `_nav_to` rebuilds each page's `elem_classes` on every navigation, so a page's
+  width class (`narrow`/`wide`) must come from `_page_classes`, or the first nav
+  strips it.
+- `demo.launch()` has no `show_api` kwarg in 6.19 and there's no Blocks option to
+  disable the API page or the footer — hide the footer with CSS; the server binds
+  127.0.0.1 only.
+- **Never kill processes by image name (`taskkill /IM python.exe`,
+  `pkill -f python`, etc.).** This machine runs other Python; a name-based kill
+  takes them down too. The single-instance lock (`data/oshiire.lock`) records
+  `port pid`, so the live app's PID is known — but verify the PID's command line
+  runs this repo's `app.py` before terminating it.
+- The Preview filing result is a plain **HTML** table, not `gr.Dataframe`:
+  `gr.Dataframe` froze the UI for minutes at ~1000 rows, so the plan table is
+  rendered as HTML (`archive_dryrun_plan_table`/`_plan_wrap`) instead.
+- The **Free up saved space** page serves exactly one extra file over
+  `gr.set_static_paths`: `oshiire_unsave.user.js` (plus the bundled fonts).
+  Nothing else in the repo is exposed — see `_static_paths()` in `review.py`.
+
 ## Security rules (do not violate)
 - `.env` holds TWO secrets: `REDDIT_SAVED_FEED_URL` (a per-account feed token)
   and `REDDIT_SESSION_COOKIE` (a logged-in cookie string copied from the

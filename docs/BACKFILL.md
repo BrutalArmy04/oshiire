@@ -161,9 +161,9 @@ Three things keep it current, and all three are needed:
 
 - `archive.py --apply` records each file it files (and each wallpaper copy) as
   it goes, reusing the hash review already computed. Free, no image re-read.
-- `launchers/7_maintenance.bat` step 5 re-runs `hash_index.py build`. This is
-  the **only** thing that catches images you added to the archive by hand,
-  outside the pipeline — which for most people is most of the archive.
+- The **Backfill** run's final step re-runs `hash_index.py build`. This is the
+  **only** thing that catches images you added to the archive by hand, outside
+  the pipeline — which for most people is most of the archive.
 - Duplicate detection falls back to an entry's cached hash when the index
   doesn't have it yet. Correct, but narrower: it only covers files the pipeline
   itself handled.
@@ -240,6 +240,15 @@ Then edit `OWNED_MAX` and `UNCERTAIN_MAX` near the top of `backfill.py`.
 
 ## Step 3: run the sweep
 
+**The normal way is the `Backfill` door on Oshiire's home menu** (Coming in).
+Set **Posts to sweep this run** (the batch size), press Run, and watch the live
+log; **Stop** halts at the next checkpoint, keeping every finished batch. When
+the sweep finishes it also ingests, hashes and re-indexes in the same run (the
+maintenance cycle — see Steady state). Everything below describes what that
+button does and how to tune it.
+
+**Advanced / scripted path — the CLI still works:**
+
 ```
 python backfill.py --limit 500
 ```
@@ -247,7 +256,8 @@ python backfill.py --limit 500
 Batched and resumable. Run it, let it work through 500 rows, stop. Run it again
 later and it picks up where it left off. On a ~40,000-row export at a couple of
 seconds per post, the whole thing is a background chore spread over days — which
-is fine, and is the intended way to use it.
+is fine, and is the intended way to use it. (The menu's Backfill is this same
+`backfill.py`, run for you with `--limit` set to your batch size.)
 
 ### What it does per row
 
@@ -359,11 +369,8 @@ sweep warns and disables tombstone matching rather than comparing across depths.
 ## Step 4: review the uncertain band
 
 **This does not resolve itself.** Nothing downstream promotes an uncertain entry
-or discards it. It sits in `pending_review` until you look at it.
-
-```
-launchers\3_review.bat
-```
+or discards it. It sits in `pending_review` until you look at it — open the
+**Review** door on the home menu.
 
 An uncertain entry shows an **amber** duplicate banner naming the archived image
 it resembles and the distance. Amber means the numbers could not decide — that
@@ -382,6 +389,16 @@ means near-identical, with a one-click reject offered.
 
 Now that history is captured, free up the listing so new saves become visible
 again.
+
+**The normal way is the `Free up saved space` page**, reached from **Manage** on
+the home menu (and offered straight from an Ingest run that found nothing new).
+It walks the whole drain in three steps — build the list, install the browser
+helper once, then unsave in your own browser — and runs the export below for you
+as a normal job, with the safe-to-unsave count and an "Open folder" button for
+`data/unsave_list.json`. Everything on it stays 100% local: Oshiire never calls
+Reddit's API, never logs in, and never clicks anything on Reddit itself.
+
+**Advanced / scripted path — the CLI still works:**
 
 ```
 python export_unsave_list.py
@@ -407,6 +424,10 @@ gallery can have one image captured and a sibling that failed, and unsaving it
 would lose the retry.
 
 ### Then run the userscript
+
+The `Free up saved space` page has buttons for the two steps below (open the
+helper script so your extension installs it; open your saved page). The manual
+route is the same thing by hand:
 
 Install `oshiire_unsave.user.js` in Tampermonkey/Violentmonkey and open your own
 old.reddit saved page. It runs in your authenticated browser and clicks the same
@@ -474,13 +495,9 @@ watching — that is how many posts became drainable since last time.
 
 ## Steady state
 
-Once the back catalogue is swept, the routine is one launcher:
-
-```
-launchers\7_maintenance.bat
-```
-
-Five steps, with summaries printed for each:
+Once the back catalogue is swept, the routine is one door: **Backfill** on the
+home menu. One run does the whole maintenance cycle, with a live log for each
+step:
 
 | Step | What | Why here |
 |---|---|---|
@@ -498,11 +515,11 @@ drain a batch.
 
 | Situation | Run |
 |---|---|
-| Routine upkeep | `7_maintenance.bat` |
-| After a big archiving run | Step 5 alone: `hash_index.py build` |
+| Routine upkeep | **Backfill** menu entry |
+| After a big archiving run | File images already re-indexes; else `hash_index.py build` |
 | After a large manual import into the archive | `hash_index.py build` |
 | Sweep aborted on rate limits | Wait, then `backfill.py --retry-failed` |
-| Just want new saves, nothing else | `1_ingest.bat` |
+| Just want new saves, nothing else | **Ingest** menu entry |
 
 ---
 
@@ -546,8 +563,10 @@ cleanly and rewinds so the interrupted row is retried.
 
 - Wait. Hours, not minutes; the throttle is per-account and has a long memory.
 - Increase `--sleep` (default 2.0s) on the next run.
-- Increase `COOLDOWN` in `7_maintenance.bat` if the *ingest* step is what's
-  getting throttled — that means the backfill step used up the budget.
+- The menu's Backfill inserts a fixed **120 s cooldown** between the sweep and
+  the ingest for exactly this reason; if the *ingest* step is still what's
+  getting throttled, the sweep used up the budget — sweep a smaller batch, or
+  run the CLI `ingest.py` separately later.
 - Then `python backfill.py --retry-failed` to recover anything mislabelled.
 
 Do not lower `--sleep` to "get it over with". The sweep is designed to be

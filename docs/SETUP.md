@@ -20,23 +20,41 @@ first time. For the pitch, architecture, and screenshots, see the main
    run below 3.14 in this project. If you try it and it works, good — but you are
    the first, and a failure is a bug report about your setup, not about the code.
 
-   Windows users: the `.bat` launchers all invoke `.venv-win\Scripts\python.exe`
-   **by name**, so build your virtualenv at that exact path or edit the
-   launchers.
+   Windows users: `Oshiire.bat` invokes `.venv-win\Scripts\pythonw.exe` **by
+   name** (and the pipeline steps use the sibling `python.exe`), so build your
+   virtualenv at that exact path or edit `Oshiire.bat`.
 
-1. Clone the repo, create a virtualenv, and install dependencies. Windows, to
-   match the launchers:
+1. Clone the repo, then run the installer. It builds the virtualenv at the path
+   the launcher expects, installs dependencies, **and upgrades numpy** (step 2
+   — the one step people miss) in one go:
+
+   - **Windows:** double-click **`install.bat`** (or run it from a terminal). It
+     creates `.venv-win` — the exact path `Oshiire.bat` invokes by name.
+   - **Linux/macOS:** run **`./install.sh`**. It creates `.venv`, the path
+     `oshiire.sh` uses. (Override the interpreter with `PYTHON=python3.14
+     ./install.sh` if `python3` isn't 3.14.)
+
+   The installer prints the final numpy version so you can confirm it's 2.x.
+
+   **Manual alternative** (if you'd rather do it by hand — this is exactly what
+   the installer runs). Windows, to match `Oshiire.bat`:
    ```
    python -m venv .venv-win
    .venv-win\Scripts\activate
    pip install -r requirements.txt
+   pip install --upgrade numpy      <- step 2 below; do NOT skip it
    ```
-   Linux/macOS (nothing invokes this by name, so call it what you like):
+   Linux/macOS (`oshiire.sh` expects `.venv`):
    ```
    python3 -m venv .venv
    source .venv/bin/activate
    pip install -r requirements.txt
+   pip install --upgrade numpy      <- step 2 below; do NOT skip it
    ```
+   `requirements.txt` + the numpy upgrade is all you need to run Oshiire.
+   **Contributors** who want to run the opt-in end-to-end test or rebuild the
+   bundled fonts also install `requirements-dev.txt` (Playwright + fonttools) —
+   not needed for normal use.
 
    One of those dependencies is worth knowing about before it surprises you:
    `curl_cffi` is pinned (`curl_cffi==0.16.2`) and is the transport Oshiire
@@ -49,15 +67,26 @@ first time. For the pitch, architecture, and screenshots, see the main
    the wire. Nothing else in the project imports it; it lives behind
    `redditclient.py`.
 
-2. **Numpy gotcha — do this right after step 1.**
+2. **Numpy gotcha — the installer already does this; do it yourself only if you
+   installed manually.** This step is not optional, and it is the single most
+   common way a setup breaks:
+
    `dghs-imgutils` pins `numpy<2`, but numpy 1.x has no prebuilt wheel for
-   Python **3.13+** — pip falls back to building from source, which segfaults on
-   import. `onnxruntime`/`opencv`/`imgutils` all work fine with numpy 2.x
-   despite the stale pin, so override it:
+   Python **3.13+** — pip falls back to the experimental MinGW build, which
+   crashes on import. `onnxruntime`/`opencv`/`imgutils` all work fine with numpy
+   2.x despite the stale pin, so override it:
    ```
    pip install --upgrade numpy
    ```
    (tested working: numpy 2.5.1 on 3.14.6).
+
+   If you ever re-run `pip install -r requirements.txt` later, it silently
+   downgrades numpy again — re-run the upgrade afterwards. Oshiire now
+   **checks numpy at startup** and, if it's too old or the broken MinGW build,
+   refuses to launch with a visible window telling you to run
+   `.venv-win\Scripts\pip install --upgrade numpy` (the full log is in
+   `data\oshiire.log`) — so a silent black window is no longer how you find
+   out.
 
    The 3.13+ scoping is why this step exists rather than being a `requirements.txt`
    pin: on 3.12 and earlier the constraint resolves to a real wheel and this
@@ -286,8 +315,8 @@ shortname) or gets flagged in the dry-run table for you to resolve, so
 nothing is lost — you just add franchises to the config as you encounter
 them. `subreddit_map.json` works the same way: it starts seeded with a
 handful of example subs, and grows as you go — every time review hits a
-subreddit it doesn't recognize, it asks you right there (the confirm panel
-in the second README screenshot) whether and how to remember it. You don't
+subreddit it doesn't recognize, it asks you right there (the subreddit-mapping
+confirm screenshot in the README) whether and how to remember it. You don't
 need to pre-populate a full subreddit map before starting.
 
 With that in mind, the first end-to-end run looks like this:
@@ -311,36 +340,36 @@ With that in mind, the first end-to-end run looks like this:
 
    It is also a hard prerequisite for the back-catalogue sweep — see
    [BACKFILL.md](BACKFILL.md).
-2. **`launchers/1_ingest.bat`** — fetches your saved feed and downloads new
-   images into `staging/`. Nothing is reviewed or filed yet; check `staging/`
-   and you'll see the downloaded images.
-3. **`launchers/3_review.bat`** — opens the review UI in your browser. Go
-   through a few images: Accept the ones tagged correctly, fix the
-   character/franchise fields and then Accept for the ones that aren't, Skip
-   anything you're unsure about (it'll come back next time). Nothing outside
-   `staging/` is touched yet.
-4. **`launchers/5_archive_dryrun.bat`** — prints a table of where each accepted
+2. **Double-click `Oshiire.bat`** (Windows) or **`oshiire.sh`** (Linux/macOS).
+   Oshiire opens in your web browser. Everything below is a door on the home
+   menu — no terminal.
+3. **Ingest** (Coming in) — fetches your saved feed and downloads new images
+   into `staging/`. AI tagging runs automatically when the fetch finishes.
+   Nothing is reviewed or filed yet; check `staging/` and you'll see the images.
+4. **Review** (the big door) — go through a few images: Accept the ones tagged
+   correctly, fix the character/franchise fields and then Accept the ones that
+   aren't, Skip anything you're unsure about (it comes back next time). Nothing
+   outside `staging/` is touched yet.
+5. **Preview filing** (Putting away) — shows a table of where each accepted
    image *would* go, without moving anything. **Read this table.** If a
-   franchise or character isn't in `layout.json` yet, it shows up here as
-   flagged instead of guessed. If the dry-run flags an entry, it means the
-   franchise or character isn't in your layout yet — run
-   `launchers/4_resolve.bat` to map it to an existing folder, create a new one,
-   or file it under Others.
-5. **`launchers/6_archive_apply.bat`** — re-runs the same routing, this time
-   actually moving files into `ARCHIVE_DIR` and creating any subfolders it needs.
-6. Look in `ARCHIVE_DIR`. Your accepted images are now filed into it, in the
+   franchise or character isn't in `layout.json` yet, it shows up flagged
+   instead of guessed — open **Resolve** to map it to an existing folder, create
+   a new one, or file it under Others.
+6. **File images** (Putting away) — re-runs the same routing, this time actually
+   moving files into `ARCHIVE_DIR` and creating any subfolders it needs.
+7. Look in `ARCHIVE_DIR`. Your accepted images are now filed into it, in the
    shape you described in `layout.json`.
 
-**Nothing writes to `ARCHIVE_DIR` until step 5.** Step 1 only reads it, and
-steps 2–4 are entirely read/stage-only, so it's safe to stop after the dry-run,
-adjust `layout.json` based on what got flagged, and re-run the dry-run as many
-times as you want before ever applying.
+**Nothing writes to `ARCHIVE_DIR` until step 6.** Step 1 only reads it, and
+steps 3–5 are entirely read/stage-only, so it's safe to stop after Preview
+filing, adjust `layout.json` based on what got flagged, and re-run Preview
+filing as many times as you want before ever filing.
 
 Once you're comfortable with the loop, see Usage below for the full daily
-workflow, including the AI tagging pass and the flag-resolution screen.
+workflow, including Backfill and the flag-resolution screen.
 
-If `1_ingest.bat` reports `downloaded=0` even though you've saved new things,
-nothing is broken — you've hit Reddit's saved-listing ceiling. See
+If **Ingest** finds nothing new even though you've saved things, nothing is
+broken — you've hit Reddit's saved-listing ceiling. See
 [BACKFILL.md](BACKFILL.md), which is the whole story and the fix.
 
 If instead a run stops with **`Reddit returned its login wall`**, or ingest
@@ -354,63 +383,77 @@ recorded as a retryable `skipped` entry that the next ingest picks up. If the
 
 ## Usage
 
-The daily workflow runs through the numbered `.bat` launchers in the
-`launchers/` folder. Double-click them in order — the filename numbering now
-matches the actual workflow order:
+The daily loop is: **double-click Oshiire, then work through the home menu.**
 
-- **`launchers/0_open_saved_page.bat`** *(optional)* — opens your Reddit saved
-  page in the browser, so the drain step is one double-click away. Reads your
-  username from `.env`'s `REDDIT_USERNAME`; edit the placeholder in the file if
-  you leave that blank.
-1. **`launchers/1_ingest.bat`** — fetches the saved feed, downloads new images
-   into `staging/`, runs metadata-based tagging, records everything in
-   `manifest.json`.
-   Saved posts with no importable image (text, links, video, a gallery whose
-   page won't parse) are recorded as `skipped` and never reach review, since
-   there's no picture to judge. To see them:
-   `.venv-win\Scripts\python.exe ingest.py --list-skipped` — it says which are
-   still being retried automatically, and offers `--retry-skipped KEY` to force
-   a re-fetch or `--reject-skipped KEY` to close one out for good.
-2. **`launchers/2_ai_tag.bat`** — runs the local WD14 tagger over whatever
-   metadata tagging left unidentified. This runs *before* review — it's cheaper
-   to let the AI fill gaps first than to hand-tag them, so unidentified images
-   arrive at review already tagged.
-3. **`launchers/3_review.bat`** — opens the Gradio review UI. One image at a
-   time, chronological order: Accept, Reject, or Skip, with character/franchise/
-   crossover fields editable before accepting. Two things show up here
-   automatically: a **duplicate warning** when the image perceptually matches
-   something already archived or still in staging (red = near-certain, amber =
-   possibly related), and the image's **pixel dimensions** next to the
-   Wallpaper control, with a ★ marking any wallpaper target its size suits.
-   The suggestion is never auto-selected — you always pick.
-4. **`launchers/4_resolve.bat`** — only if the dry-run (step 5) flagged anything
-   (an unmapped franchise/character, etc.). Walks through each flagged entry and
-   lets you resolve it (map to an existing folder, create a new one, propose a
-   shortname).
-5. **`launchers/5_archive_dryrun.bat`** — prints the planned moves for every
-   `approved` entry, without touching any files. **Always read this output**
-   before applying — it's also where routing conflicts get flagged. If it flags
-   anything, run `4_resolve.bat` and dry-run again.
-6. **`launchers/6_archive_apply.bat`** — re-runs the same routing logic as the
-   dry-run, this time actually moving files into `ARCHIVE_DIR` and updating the
-   manifest.
-7. **`launchers/7_maintenance.bat`** *(periodic)* — the post-cap maintenance
-   cycle, in five steps: sweeps the back-catalogue (`backfill`), exports the
-   unsave whitelist, runs a fresh RSS ingest, hashes the newly downloaded
-   images, and refreshes the archive index so newly filed art is included in
-   duplicate detection. It prints a summary of each. Run it when you want to
-   reach past the RSS feed's rolling window — and after a big archiving run,
-   for step 5 alone. The first time, read [BACKFILL.md](BACKFILL.md) before
-   running it: step 1 needs `data/saved_posts.csv` from a Reddit data export,
-   and the thresholds it sweeps with are worth calibrating to your own archive.
-   Draining the listing afterwards (loading the refreshed whitelist into the
-   browser userscript) is documented there too — including why it counts by
-   default and unsaves only when explicitly told to.
-8. **`launchers/8_history.bat`** *(anytime)* — a read-only browser of already
-   processed entries, newest first, filterable by status and showing where
-   each archived image was filed. Purely for looking things up: it has no edit
-   controls and never writes anything. (To revert your most recent decision,
-   use **Undo** in the review UI instead.)
+**Opening and closing.** `Oshiire.bat` (Windows) / `oshiire.sh` (Linux/macOS)
+opens it in your **web browser** by default. Prefer its own **window**, or set
+**Light / Dark / Match system**, under **Manage → Settings → App** — both are
+stored in `data/settings.json` and take effect next launch (appearance also
+applies to the open tab at once). In browser mode, **Quit Oshiire** in the header
+stops the server (then you can close the tab); in window mode, closing the window
+quits. **Closing the browser tab is fine** — you needn't Quit first: the server
+keeps running in the background but **stops itself after 10 idle minutes** (never
+while a job is running). A **second double-click** while it's running never
+starts a second copy — in browser mode it opens another tab at the running one,
+and otherwise (or in window mode) it shows a small window offering **Open it**
+(reopen the running Oshiire) or **Stop it and start fresh** (stop the background
+instance — it warns first if a job might be running — and start over).
+
+If the **archive folder isn't reachable** (e.g. a Google Drive folder and Drive
+isn't running), the home board warns and the Putting-away doors wait — start
+Drive, then click **Check again**. Review, Ingest, Backfill, History and
+Settings keep working meanwhile.
+
+The menu, in workflow order:
+
+- **Ingest** (Coming in) — fetches the saved feed, downloads new images into
+  `staging/`, runs metadata tagging, then **AI tagging runs automatically** (the
+  local WD14 tagger fills whatever metadata left unidentified) — all recorded in
+  `manifest.json`. Saved posts with no importable image (text, links, video, an
+  unparseable gallery) are recorded as `skipped` and never reach review. To
+  inspect those from a terminal:
+  `.venv-win\Scripts\python.exe ingest.py --list-skipped` (with
+  `--retry-skipped KEY` to force a re-fetch, `--reject-skipped KEY` to close one
+  out for good).
+- **Backfill** (Coming in) — works through older saves from your Reddit data
+  export, a batch at a time: set the batch size, and **Stop** halts at the next
+  checkpoint (every finished batch is kept). It then exports the unsave
+  whitelist, runs a fresh ingest, hashes the new images and rebuilds the archive
+  index — the whole post-cap maintenance cycle. Read [BACKFILL.md](BACKFILL.md)
+  before the first run: it needs `data/saved_posts.csv` from a Reddit data
+  export, and the thresholds are worth calibrating to your own archive. The
+  listing-drain step (loading the refreshed whitelist into the browser
+  userscript) is documented there too.
+- **Review** — one image at a time, chronological: Accept / Reject / Skip, with
+  character / franchise / crossover editable before accepting. Two things show
+  automatically: a **duplicate warning** when the image perceptually matches
+  something already archived or still in staging (red = near-certain, amber =
+  possibly related), and the image's **pixel dimensions** next to the Wallpaper
+  control, with a ★ marking any wallpaper target its size suits (never
+  auto-selected — you always pick).
+- **Preview filing** (Putting away) — prints the planned moves for every
+  `approved` entry without touching files. **Always read it** before File
+  images; routing conflicts get flagged here.
+- **Resolve** (Putting away) — only if Preview filing flagged anything (an
+  unmapped franchise/character, etc.). Walk through each flagged entry and
+  resolve it (map to an existing folder, create a new one, propose a shortname).
+- **File images** (Putting away) — re-runs the same routing, this time moving
+  files into `ARCHIVE_DIR` and updating the manifest. Afterwards it refreshes
+  the duplicate index and the unsave list.
+- **History** (header) — a read-only browser of processed entries, newest
+  first, filterable by status, showing where each archived image was filed. No
+  edit controls and it never writes anything. (To revert your most recent
+  decision, use **Undo** in Review instead.)
+- **Manage** (header) — **Character Folders** (promote a Known-Series series to
+  its own folder, or create a new one), **Sync** (reconcile the archive against
+  the manifest), and **Settings** (the five config editors plus the **App** tab
+  for window/appearance).
+
+**Where things live.** App preferences in `data/settings.json` (window mode and
+appearance — never a secret; `.env` is never written). History thumbnails cache
+under `data/thumbs/`. The run log (useful if something goes wrong in window
+mode, where there's no console) is `data/oshiire.log`, rotated to
+`data/oshiire.prev.log`. All of `data/` is gitignored.
 
 ### Duplicate detection needs the archive index
 
@@ -432,11 +475,11 @@ gitignored.
 is a snapshot: art filed after it was built isn't in it, and an image that
 isn't in it is compared against nothing. Two things keep it current:
 
-- `6_archive_apply.bat` records every file it files (and every wallpaper copy)
-  in the index as it goes, reusing the hash review already computed — free, and
-  it means art you archive is comparable immediately.
-- `7_maintenance.bat` step 5 re-runs `hash_index.py build`, which is what
-  catches images you added to the archive **by hand**, outside the pipeline.
+- **File images** records every file it files (and every wallpaper copy) in the
+  index as it goes, reusing the hash review already computed — free, and it means
+  art you archive is comparable immediately.
+- **Backfill**'s final step re-runs `hash_index.py build`, which is what catches
+  images you added to the archive **by hand**, outside the pipeline.
 
 Run `build` yourself after a large manual import if you don't want to wait for
 the next maintenance cycle. It's resumable and only hashes files that are new
