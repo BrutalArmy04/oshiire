@@ -40,7 +40,9 @@ from hash_index import compute_phash, hamming, _configure_pillow
 from manifest import load_manifest, save_manifest
 from useragent import build_user_agent
 
-TOMBSTONES_PATH = Path("data/tombstones.json")
+# Shipped reference data, so it lives with the app files, not in the data root
+# (the cwd). In a git checkout both are the same folder.
+TOMBSTONES_PATH = Path(__file__).resolve().parent / "data" / "tombstones.json"
 STAGING_DIR = Path("staging")
 
 # Default Hamming tolerance if a signature omits max_distance. Small: a fixed

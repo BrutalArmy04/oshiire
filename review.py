@@ -20,10 +20,16 @@ import warnings
 from collections import namedtuple
 from functools import partial
 from pathlib import Path
+from urllib.parse import quote
 
 import gradio as gr
-from dotenv import dotenv_values, load_dotenv
+from dotenv import load_dotenv
 from starlette.exceptions import StarletteDeprecationWarning
+
+# Merged settings (env > .env > data/config.env) and the app/data folder split.
+# Both are stdlib + python-dotenv only.
+import config
+import datahome
 
 # Phase B: runs the ingest/backfill/archive CLI pipelines as child processes and
 # streams their output. jobs.py imports no gradio and does no network itself.
@@ -123,6 +129,17 @@ _OC_TITLE_RE = re.compile(
     re.IGNORECASE,
 )
 
+
+def _gradio_file_url(path):
+    """The /gradio_api/file= URL for a file or folder, by its ABSOLUTE path:
+    forward slashes, URL-quoted (the app folder may contain spaces). gradio
+    resolves a RELATIVE file= path against the cwd, which is the data root, not
+    the app folder -- so app files are always addressed absolutely."""
+    return "/gradio_api/file=" + quote(Path(path).resolve().as_posix(), safe="/:")
+
+
+_FONTS_DIR = datahome.APP_DIR / "assets" / "fonts"
+
 CUSTOM_CSS = """
 /* ---- Bundled font: Zen Kaku Gothic New (SIL OFL). Subset woff2 in
    assets/fonts/, served locally through gr.set_static_paths (see launch_app).
@@ -131,17 +148,17 @@ CUSTOM_CSS = """
 @font-face {
     font-family: 'Zen Kaku Gothic New'; font-style: normal; font-weight: 400;
     font-display: swap;
-    src: url('/gradio_api/file=assets/fonts/ZenKakuGothicNew-Regular.woff2') format('woff2');
+    src: url('__OSHIIRE_FONTS__/ZenKakuGothicNew-Regular.woff2') format('woff2');
 }
 @font-face {
     font-family: 'Zen Kaku Gothic New'; font-style: normal; font-weight: 500;
     font-display: swap;
-    src: url('/gradio_api/file=assets/fonts/ZenKakuGothicNew-Medium.woff2') format('woff2');
+    src: url('__OSHIIRE_FONTS__/ZenKakuGothicNew-Medium.woff2') format('woff2');
 }
 @font-face {
     font-family: 'Zen Kaku Gothic New'; font-style: normal; font-weight: 700;
     font-display: swap;
-    src: url('/gradio_api/file=assets/fonts/ZenKakuGothicNew-Bold.woff2') format('woff2');
+    src: url('__OSHIIRE_FONTS__/ZenKakuGothicNew-Bold.woff2') format('woff2');
 }
 
 /* ---- The "closet" palette. These are the tokens the whole app paints with;
@@ -457,6 +474,9 @@ table.plan-table tr.needs-resolve td:first-child { box-shadow: inset 3px 0 var(-
 .step-head :is(h1, h2, h3, h4) { margin: 0.6em 0 0 0 !important; line-height: 1.3 !important; }
 .page-hidden { display: none !important; }
 """
+# The @font-face src URLs carry the fonts folder's absolute path (see
+# _gradio_file_url), filled in here so the CSS text above stays readable.
+CUSTOM_CSS = CUSTOM_CSS.replace("__OSHIIRE_FONTS__", _gradio_file_url(_FONTS_DIR))
 
 # Resolve and History render inside this app's Blocks, so their stylesheets have
 # to ride along on the single css= passed to demo.launch. (Both define
@@ -2097,8 +2117,7 @@ def on_ingest_run():
 
 def _reddit_username():
     """REDDIT_USERNAME from .env, read fresh (never logged). '' when unset."""
-    env = dotenv_values(jobs.REPO_ROOT / ".env")
-    return (env.get("REDDIT_USERNAME") or "").strip()
+    return config.get("REDDIT_USERNAME").strip()
 
 
 _OLD_REDDIT_URL = "https://old.reddit.com/"
@@ -2126,6 +2145,22 @@ def _static_paths():
     return [str(root / "assets" / "fonts"), _USERSCRIPT_PATH]
 
 
+def _blocked_paths():
+    """The settings files gradio must never serve, as absolute paths: both .env
+    files and data/config.env. gradio checks blocked_paths before anything it
+    allows -- on the /file= route AND when a handler's output file is moved to
+    its cache -- so these win even though the data root (cwd) is otherwise
+    servable as component output."""
+    paths = [path for _, path in config.source_files()]
+    paths.append(datahome.APP_DIR / ".env")  # always, even if config read another app dir
+    blocked = []
+    for path in paths:
+        text = str(Path(path).absolute())
+        if text not in blocked:
+            blocked.append(text)
+    return blocked
+
+
 def on_export_unsave_run():
     """Free-up-space step 1: run export_unsave_list.py as a normal job. It only
     reads the manifest + backfill log and writes data/unsave_list.json, so it
@@ -2148,7 +2183,7 @@ def _reveal_unsave_list():
     machine). Falls back to the data/ folder when the file isn't built yet.
     Never raises into the UI -- returns a short status line."""
     import subprocess
-    target = jobs.REPO_ROOT / "data" / "unsave_list.json"
+    target = Path.cwd() / "data" / "unsave_list.json"  # the data root
     folder = target.parent
     try:
         folder.mkdir(parents=True, exist_ok=True)
@@ -2177,7 +2212,7 @@ def _open_userscript():
     if not port:
         return ("Couldn't find the local server port. Open "
                 f"`{_USERSCRIPT_NAME}` from the Oshiire folder in your browser.")
-    webbrowser.open(f"http://127.0.0.1:{port}/gradio_api/file={_USERSCRIPT_NAME}")
+    webbrowser.open(f"http://127.0.0.1:{port}{_gradio_file_url(_USERSCRIPT_PATH)}")
     return ("Opening the helper script — your userscript extension "
             "(Tampermonkey / Violentmonkey) should offer to install it.")
 
@@ -5687,6 +5722,7 @@ def launch_app(inbrowser=True, block=True) -> str:
     # else the UI shows -- Review's staging images and History's data/thumbs
     # cache -- sits under cwd and is already served without an entry here.
     allowed_paths = [str(archive_dir)] if archive_dir else []
+    blocked_paths = _blocked_paths()
     # Launch non-blocking so the browser can be opened at the themed URL
     # (?__theme=light), then block here if the caller asked to. gradio follows
     # the system's dark mode otherwise, which would wreck the closet palette.
@@ -5699,6 +5735,7 @@ def launch_app(inbrowser=True, block=True) -> str:
         server_name="127.0.0.1",
         server_port=None,
         allowed_paths=allowed_paths,
+        blocked_paths=blocked_paths,
         prevent_thread_lock=True,
     )
     startup_timing.mark("server up")

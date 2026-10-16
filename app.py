@@ -29,7 +29,10 @@ import time
 import traceback
 from pathlib import Path
 
+import config
+import datahome
 import settings
+import starters
 from instance import (
     acquire_single_instance,
     clear_recorded_port,
@@ -619,7 +622,9 @@ def _spawn_fresh_app():
     """Launch a brand-new, detached Oshiire (a fresh app.py) in the same cwd with
     no console, and return without waiting for it. The lock must already be free
     (we released it) so the new instance can take it."""
-    kwargs = {"cwd": str(REPO_ROOT), "close_fds": True}
+    # cwd is the data root; env is the pre-config environment, so the fresh
+    # instance re-reads .env/config.env itself and reports their sources truly.
+    kwargs = {"cwd": os.getcwd(), "close_fds": True, "env": config.launch_environ()}
     if sys.platform == "win32":
         kwargs["creationflags"] = (subprocess.DETACHED_PROCESS
                                    | subprocess.CREATE_NEW_PROCESS_GROUP)
@@ -900,7 +905,14 @@ def _run_native(lock):
 # BEFORE review is imported and surfaces any startup failure in a visible
 # window, so the app never just fails silently. The fix is to upgrade numpy.
 _MIN_NUMPY_MAJOR = 2
-_NUMPY_FIX = r".venv-win\Scripts\pip install --upgrade numpy"
+if datahome.is_release():
+    # A release copy ships its packages pre-installed; there is no pip to run.
+    _NUMPY_FIX = ("Download Oshiire again and replace this copy's files "
+                  "(your data is kept separately).")
+    _NUMPY_FIX_IS_COMMAND = False
+else:
+    _NUMPY_FIX = r".venv-win\Scripts\pip install --upgrade numpy"
+    _NUMPY_FIX_IS_COMMAND = True
 _LOG_PATH = Path("data") / "oshiire.log"
 
 
@@ -969,16 +981,20 @@ def _check_numpy():
     return _numpy_fault(version, mingw)
 
 
-def _show_error_window(reason, fix=None, log_path=_LOG_PATH):
+def _show_error_window(reason, fix=None, log_path=_LOG_PATH, fix_is_command=True):
     """Pop up a visible, blocking error dialog so a startup failure is never
     silent -- including under pythonw, where there is no console. Uses stdlib
     tkinter only (no extra dependency, always importable), and never raises: if
     even tkinter is unavailable it falls back to printing. `reason` is the
     one-line cause; `fix` an exact command the user can run to repair it."""
     parts = ["Oshiire couldn't start.", "", reason]
-    if fix:
+    if fix and fix_is_command:
         parts += ["", "To fix it, run this from the Oshiire folder:", f"    {fix}"]
-    parts += ["", f"Full log: {log_path}"]
+    elif fix:
+        parts += ["", f"To fix it: {fix}"]
+    # Absolute: in a release the log lives in the per-user data folder, which a
+    # relative "data\oshiire.log" would not lead anyone to.
+    parts += ["", f"Full log: {Path(log_path).absolute()}"]
     message = "\n".join(parts)
     try:
         import tkinter
@@ -1002,7 +1018,14 @@ def main():
     # A desktop shortcut may launch us with a different "Start in" folder, so
     # anchor the cwd on this file's directory -- manifest.json, data/, .env and
     # data/settings.json are all resolved relative to it.
-    os.chdir(Path(__file__).resolve().parent)
+    # The data root (datahome.py) IS the cwd from here on: the app folder in a
+    # git checkout, the per-user data folder in a release, or OSHIIRE_HOME.
+    root = datahome.data_root()
+    root.mkdir(parents=True, exist_ok=True)
+    os.chdir(root)
+    # Settings from env/.env/data/config.env, before anything reads them; this
+    # also stops python-dotenv's own upward .env search (see config.py).
+    config.load()
 
     mode = settings.window_mode()  # "browser" (default) or "native"
 
@@ -1030,6 +1053,13 @@ def main():
     # us can never read an old port before launch_app records the real one.
     clear_recorded_port()
     _setup_stdio()
+    print(config.summary())  # key names and sources only, never a value
+
+    # A first run has no configs, and `import review` exits without layout.json.
+    # Missing files only, never an overwrite; a no-op once they exist.
+    created = starters.ensure_starters()
+    if created:
+        print("Created starter files: " + ", ".join(str(p) for p in created))
 
     # Before importing review (which pulls in numpy): a bad numpy -- the numpy<2
     # MinGW build the pin can produce on 3.14 -- crashes that import. Catch it
@@ -1037,7 +1067,7 @@ def main():
     reason = _check_numpy()
     if reason is not None:
         print(f"Oshiire startup check failed: {reason}")
-        _show_error_window(reason, fix=_NUMPY_FIX)
+        _show_error_window(reason, fix=_NUMPY_FIX, fix_is_command=_NUMPY_FIX_IS_COMMAND)
         sys.exit(1)
 
     if mode == "native":

@@ -60,6 +60,8 @@ data/oshiire.lock
 # App preferences the app writes itself (launch mode). Machine-local; not a
 # secret (secrets live in .env, which the app never writes), but per-machine.
 data/settings.json
+# Settings entered in the app's setup (feed URL, cookie, archive path). Secrets.
+data/config.env
 
 # Reddit saved-posts export -- personal account data. Template is committed so
 # the backfill sweep can be dry-run before you request your own export.

@@ -27,6 +27,32 @@ sys.path.insert(0, str(REPO))
 import app
 import jobs
 
+# main() now chdirs to datahome.data_root(), merges settings into os.environ
+# (config.load) and writes starter files. For every test in this module, point
+# the data root at a throwaway folder via OSHIIRE_HOME and stub the config and
+# starter steps, so no main() call reads the real .env or writes to the checkout.
+_MODULE_PATCHES = []
+_HOME = None
+
+
+def setUpModule():
+    global _HOME
+    _HOME = Path(tempfile.mkdtemp(prefix="app-home-")).resolve()
+    for patcher in (mock.patch.dict(os.environ, {"OSHIIRE_HOME": str(_HOME)}),
+                    mock.patch.object(app.config, "load"),
+                    mock.patch.object(app.config, "summary", return_value="config: (test)"),
+                    mock.patch.object(app.config, "launch_environ", return_value=None),
+                    mock.patch.object(app.starters, "ensure_starters", return_value=[])):
+        patcher.start()
+        _MODULE_PATCHES.append(patcher)
+
+
+def tearDownModule():
+    while _MODULE_PATCHES:
+        _MODULE_PATCHES.pop().stop()
+    import shutil
+    shutil.rmtree(_HOME, ignore_errors=True)
+
 
 class CloseDecisionTest(unittest.TestCase):
     """close_decision(running_name, cancellable). The caller passes
@@ -115,11 +141,19 @@ class SecondInstanceStdioTest(unittest.TestCase):
                  mock.patch.object(app.settings, "window_mode", return_value="native"), \
                  mock.patch.object(app, "_setup_stdio") as setup_stdio, \
                  mock.patch.object(app, "_handle_already_running", return_value=None) as handle, \
+                 mock.patch.object(app.config, "load") as load, \
+                 mock.patch.object(app.starters, "ensure_starters") as ensure, \
                  mock.patch("sys.exit", side_effect=SystemExit):
                 with self.assertRaises(SystemExit):
                     app.main()
             setup_stdio.assert_not_called()
             handle.assert_called_once_with("native")
+            # Even a second launch runs in the DATA ROOT (OSHIIRE_HOME here), not
+            # the app folder, with settings loaded -- but it never writes starters
+            # (it doesn't hold the lock).
+            self.assertEqual(Path(os.getcwd()).resolve(), _HOME)
+            load.assert_called_once_with()
+            ensure.assert_not_called()
         finally:
             os.chdir(prev_cwd)
 
@@ -142,6 +176,7 @@ class SecondInstanceStdioTest(unittest.TestCase):
             wopen.assert_called_once_with("http://127.0.0.1:7860/")
             setup_stdio.assert_not_called()
             show.assert_not_called()
+            self.assertEqual(Path(os.getcwd()).resolve(), _HOME)  # the data root
         finally:
             os.chdir(prev_cwd)
 
@@ -661,13 +696,26 @@ class StopAndRestartTest(unittest.TestCase):
 
 
 class SpawnFreshAppTest(unittest.TestCase):
-    def test_spawns_detached_app_py_in_repo_cwd(self):
-        with mock.patch.object(app.subprocess, "Popen") as popen:
-            app._spawn_fresh_app()
+    def test_spawns_detached_app_py_in_data_root_cwd(self):
+        # The running instance's cwd IS the data root; the fresh one starts there
+        # with the absolute app.py, and with the pre-config environment so it
+        # re-reads .env/config.env itself.
+        pre_config_env = {"ONLY": "pre-config"}
+        prev_cwd = os.getcwd()
+        data_root = tempfile.mkdtemp(prefix="app-spawn-root-")
+        try:
+            os.chdir(data_root)
+            with mock.patch.object(app.subprocess, "Popen") as popen, \
+                 mock.patch.object(app.config, "launch_environ", return_value=pre_config_env):
+                app._spawn_fresh_app()
+        finally:
+            os.chdir(prev_cwd)
         popen.assert_called_once()
         args, kwargs = popen.call_args
         self.assertEqual(args[0], [app._relaunch_interpreter(), str(app.APP_PY)])
-        self.assertEqual(kwargs["cwd"], str(app.REPO_ROOT))
+        self.assertTrue(Path(args[0][1]).is_absolute())
+        self.assertEqual(Path(kwargs["cwd"]).resolve(), Path(data_root).resolve())
+        self.assertIs(kwargs["env"], pre_config_env)
         # Detached, no console: creationflags on Windows, start_new_session on POSIX.
         if sys.platform == "win32":
             self.assertIn("creationflags", kwargs)
@@ -847,6 +895,80 @@ class ShowErrorWindowTest(unittest.TestCase):
         self.assertIn("numpy is too old", printed)
         self.assertIn(app._NUMPY_FIX, printed)
         self.assertIn("oshiire.log", printed)
+
+
+class MainDataRootTest(unittest.TestCase):
+    """main() enters the DATA ROOT before anything else: it creates it, chdirs
+    there, loads settings, and only then reads the launch mode; after taking the
+    lock it writes starters BEFORE the numpy check and the run function (which
+    imports review, whose import needs layout.json)."""
+
+    def setUp(self):
+        self._prev_cwd = os.getcwd()
+        self._prev_lock = app._lock
+
+    def tearDown(self):
+        os.chdir(self._prev_cwd)
+        app._lock = self._prev_lock
+
+    def test_order_creates_root_enters_it_loads_config_then_starters_before_review(self):
+        root = Path(tempfile.mkdtemp(prefix="app-root-")) / "not" / "there" / "yet"
+        seen = mock.Mock()
+        seen.load.side_effect = lambda: seen.cwd_at_load(Path(os.getcwd()).resolve())
+        seen.window_mode.return_value = "browser"
+        seen.acquire.return_value = object()
+        seen.ensure_starters.return_value = []
+        seen.check_numpy.return_value = None
+        with mock.patch.dict(os.environ, {"OSHIIRE_HOME": str(root)}), \
+             mock.patch.object(app.config, "load", seen.load), \
+             mock.patch.object(app.settings, "window_mode", seen.window_mode), \
+             mock.patch.object(app, "acquire_single_instance", seen.acquire), \
+             mock.patch.object(app, "clear_recorded_port"), \
+             mock.patch.object(app, "_setup_stdio"), \
+             mock.patch.object(app.starters, "ensure_starters", seen.ensure_starters), \
+             mock.patch.object(app, "_check_numpy", seen.check_numpy), \
+             mock.patch.object(app, "_run_browser", seen.run_browser), \
+             contextlib.redirect_stdout(io.StringIO()):
+            app.main()
+        self.assertTrue(root.is_dir())  # created, parents included
+        self.assertEqual(Path(os.getcwd()).resolve(), root.resolve())
+        names = [c[0] for c in seen.mock_calls if c[0] in (
+            "load", "cwd_at_load", "window_mode", "acquire", "ensure_starters",
+            "check_numpy", "run_browser")]
+        self.assertEqual(names, ["load", "cwd_at_load", "window_mode", "acquire",
+                                 "ensure_starters", "check_numpy", "run_browser"])
+        # config.load ran with the data root already the cwd.
+        seen.cwd_at_load.assert_called_once_with(root.resolve())
+
+    def test_checkout_numpy_fix_is_the_venv_command(self):
+        # This repo is a git checkout (no release marker).
+        self.assertFalse(app.datahome.is_release())
+        self.assertIn(".venv-win", app._NUMPY_FIX)
+        self.assertTrue(app._NUMPY_FIX_IS_COMMAND)
+
+    def test_release_numpy_fix_says_download_again(self):
+        import importlib
+        try:
+            with mock.patch.object(app.datahome, "is_release", return_value=True):
+                importlib.reload(app)
+                fix, is_command = app._NUMPY_FIX, app._NUMPY_FIX_IS_COMMAND
+        finally:
+            importlib.reload(app)  # back to the checkout's values
+        self.assertIn("Download Oshiire again", fix)
+        self.assertNotIn("pip", fix)
+        self.assertFalse(is_command)
+
+    def test_error_window_words_a_non_command_fix_plainly(self):
+        out = io.StringIO()
+        with mock.patch.dict(sys.modules, {"tkinter": None}), contextlib.redirect_stdout(out):
+            app._show_error_window("numpy is broken", fix="Download Oshiire again.",
+                                   fix_is_command=False)
+        printed = out.getvalue()
+        self.assertIn("To fix it: Download Oshiire again.", printed)
+        self.assertNotIn("run this from the Oshiire folder", printed)
+        # The log path is shown absolute -- in a release it is not next to the app.
+        log_line = [l for l in printed.splitlines() if l.startswith("Full log: ")][0]
+        self.assertTrue(Path(log_line[len("Full log: "):]).is_absolute())
 
 
 if __name__ == "__main__":

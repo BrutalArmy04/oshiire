@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty, Queue
 
-from dotenv import dotenv_values
+import config
 
 # Imported for its path/parse helpers only (CSV_PATH, STATE_PATH, load_rows,
 # load_state) -- the single source of truth for the back-catalogue cursor. The
@@ -30,6 +30,12 @@ import backfill
 from hash_index import DEFAULT_DB
 
 REPO_ROOT = Path(__file__).resolve().parent
+
+
+def _script(name):
+    """A pipeline script's ABSOLUTE path in the app folder. Children run in the
+    data root (the cwd), which is not the app folder in a release."""
+    return str(REPO_ROOT / name)
 
 
 # --------------------------------------------------------------------------- #
@@ -48,9 +54,9 @@ class Step:
 def ingest_steps():
     """The RSS ingest pipeline plus the hash/tag tail: fetch, hash, tag."""
     return [
-        Step("Ingest", ["ingest.py"], "stop"),
-        Step("Hash new images", ["imagemeta.py", "warm"], "continue"),
-        Step("AI tagging", ["ai_tag.py"], "continue"),
+        Step("Ingest", [_script("ingest.py")], "stop"),
+        Step("Hash new images", [_script("imagemeta.py"), "warm"], "continue"),
+        Step("AI tagging", [_script("ai_tag.py")], "continue"),
     ]
 
 
@@ -58,13 +64,13 @@ def backfill_steps(limit, cooldown=120):
     """The full maintenance cycle -- backfill sweep, cooldown, RSS ingest,
     hash, index, AI tag."""
     return [
-        Step("Backfill", ["backfill.py", "--limit", str(limit)], "stop"),
-        Step("Export unsave whitelist", ["export_unsave_list.py"], "stop"),
+        Step("Backfill", [_script("backfill.py"), "--limit", str(limit)], "stop"),
+        Step("Export unsave whitelist", [_script("export_unsave_list.py")], "stop"),
         Step(f"Cooling down {cooldown}s", None, "stop", cooldown_s=cooldown),
-        Step("RSS ingest", ["ingest.py"], "stop"),
-        Step("Hash new images", ["imagemeta.py", "warm"], "continue"),
-        Step("Index archive", ["hash_index.py", "build"], "continue"),
-        Step("AI tagging", ["ai_tag.py"], "continue"),
+        Step("RSS ingest", [_script("ingest.py")], "stop"),
+        Step("Hash new images", [_script("imagemeta.py"), "warm"], "continue"),
+        Step("Index archive", [_script("hash_index.py"), "build"], "continue"),
+        Step("AI tagging", [_script("ai_tag.py")], "continue"),
     ]
 
 
@@ -72,13 +78,13 @@ def export_unsave_steps():
     """Build the safe-to-unsave whitelist (the Free-up-space page's step 1).
     Read-only: export_unsave_list.py reads the manifest + backfill log and writes
     only data/unsave_list.json -- no network, no .env, no manifest write."""
-    return [Step("Make the unsave list", ["export_unsave_list.py"], "stop")]
+    return [Step("Make the unsave list", [_script("export_unsave_list.py")], "stop")]
 
 
 def archive_dryrun_steps():
     # --json so the Preview filing page can render the plan as a real table
     # (parse_plan_row); the human text table still prints for the log.
-    return [Step("Archive dry run", ["archive.py", "--json"], "stop")]
+    return [Step("Archive dry run", [_script("archive.py"), "--json"], "stop")]
 
 
 def archive_apply_steps():
@@ -87,9 +93,9 @@ def archive_apply_steps():
     sweep is complete, and the unsave list goes stale exactly when apply
     archives new posts -- so they belong here too."""
     return [
-        Step("Archive apply", ["archive.py", "--apply"], "stop"),
-        Step("Refresh duplicate check", ["hash_index.py", "build"], "continue"),
-        Step("Update unsave list", ["export_unsave_list.py"], "continue"),
+        Step("Archive apply", [_script("archive.py"), "--apply"], "stop"),
+        Step("Refresh duplicate check", [_script("hash_index.py"), "build"], "continue"),
+        Step("Update unsave list", [_script("export_unsave_list.py")], "continue"),
     ]
 
 
@@ -110,20 +116,8 @@ def _secrets_from_env():
     .env: the feed= query token of REDDIT_SAVED_FEED_URL and every cookie value
     in REDDIT_SESSION_COOKIE. Only values >= 8 chars are kept. This list is for
     redact() only -- it is never printed, logged, or yielded."""
-    env = dotenv_values(REPO_ROOT / ".env")
-    secrets = []
-    feed_url = (env.get("REDDIT_SAVED_FEED_URL") or "").strip()
-    match = re.search(r"feed=([^&\s]+)", feed_url)
-    if match:
-        secrets.append(match.group(1))
-    cookie = (env.get("REDDIT_SESSION_COOKIE") or "").strip()
-    for part in cookie.split(";"):
-        if "=" in part:
-            value = part.split("=", 1)[1].strip()
-            if value:
-                secrets.append(value)
     # Longest first, so a secret that contains another is masked whole.
-    return sorted({s for s in secrets if len(s) >= _MIN_SECRET_LEN}, key=len, reverse=True)
+    return config.secret_values()
 
 
 def redact(line, secrets=()):
@@ -246,6 +240,14 @@ def running():
 # --------------------------------------------------------------------------- #
 def _child_env():
     env = dict(os.environ)
+    # The four settings as they stand NOW (files re-read), so an edit to .env or
+    # data/config.env reaches the next job: children inherit
+    # PYTHON_DOTENV_DISABLED and no longer read .env themselves.
+    for key, value in config.child_overrides().items():
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
     return env
@@ -326,7 +328,7 @@ def run_steps(steps, cancel, cancellable):
 
             proc = subprocess.Popen(
                 [_child_python(), *step.argv],
-                cwd=str(REPO_ROOT),
+                cwd=str(Path.cwd()),  # the data root (see datahome.py)
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
@@ -397,8 +399,8 @@ def _backfill_at_repo_root():
     load_rows/load_state (the single source of truth for the cursor) read the
     right files even when cwd != REPO_ROOT."""
     old_csv, old_state = backfill.CSV_PATH, backfill.STATE_PATH
-    backfill.CSV_PATH = REPO_ROOT / old_csv
-    backfill.STATE_PATH = REPO_ROOT / old_state
+    backfill.CSV_PATH = Path.cwd() / old_csv  # the data root
+    backfill.STATE_PATH = Path.cwd() / old_state
     try:
         yield
     finally:
@@ -407,8 +409,7 @@ def _backfill_at_repo_root():
 
 def ingest_available():
     """(ok, reason). Ingest needs the saved-feed URL."""
-    env = dotenv_values(REPO_ROOT / ".env")
-    if not (env.get("REDDIT_SAVED_FEED_URL") or "").strip():
+    if not config.get("REDDIT_SAVED_FEED_URL").strip():
         return (False, "Reddit feed URL isn't set up.")
     return (True, "")
 
@@ -416,12 +417,11 @@ def ingest_available():
 def backfill_available():
     """(ok, reason), checked in dependency order so the first missing piece is
     the one reported. Reasons never include a secret value."""
-    env = dotenv_values(REPO_ROOT / ".env")
-    if not (REPO_ROOT / backfill.CSV_PATH).exists():
+    if not Path(backfill.CSV_PATH).exists():  # relative -> the data root
         return (False, "No Reddit data export at data/saved_posts.csv.")
-    if not (REPO_ROOT / DEFAULT_DB).exists():
+    if not Path(DEFAULT_DB).exists():
         return (False, "The duplicate index hasn't been built yet.")
-    if not (env.get("REDDIT_SESSION_COOKIE") or "").strip():
+    if not config.get("REDDIT_SESSION_COOKIE").strip():
         return (False, "Reddit login isn't set up.")
     with _backfill_at_repo_root():
         total = len(backfill.load_rows())

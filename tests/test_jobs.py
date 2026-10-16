@@ -22,6 +22,13 @@ sys.path.insert(0, str(REPO))
 
 import jobs
 from jobs import Step
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # config_sandbox
+from config_sandbox import isolated_config
+
+
+def _app(name):
+    """A pipeline script's absolute path in the app folder, as jobs builds it."""
+    return str(jobs.REPO_ROOT / name)
 
 
 def _script(dirpath: Path, name: str, body: str) -> str:
@@ -79,7 +86,7 @@ class ExportUnsaveStepsTest(unittest.TestCase):
     def test_single_read_only_step(self):
         steps = jobs.export_unsave_steps()
         self.assertEqual([(s.label, s.argv, s.on_fail) for s in steps],
-                         [("Make the unsave list", ["export_unsave_list.py"], "stop")])
+                         [("Make the unsave list", [_app("export_unsave_list.py")], "stop")])
 
 
 class RedactTest(unittest.TestCase):
@@ -247,12 +254,14 @@ class SecretsTest(unittest.TestCase):
     REPO_ROOT/.env."""
 
     def setUp(self):
+        # The sandbox is the DATA ROOT (cwd), so its .env is the data-root .env;
+        # isolated_config hides the real app-folder .env and process env.
         self.tmp = Path(tempfile.mkdtemp(prefix="jobs-secrets-"))
-        self._prev_root = jobs.REPO_ROOT
-        jobs.REPO_ROOT = self.tmp
+        self._sandbox = isolated_config(self.tmp)
+        self._sandbox.__enter__()
 
     def tearDown(self):
-        jobs.REPO_ROOT = self._prev_root
+        self._sandbox.__exit__(None, None, None)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _write_env(self, feed_url, cookie):
@@ -297,13 +306,15 @@ class AvailabilityTest(unittest.TestCase):
     COOKIE_SECRET = "COOKIE_do_not_leak_xyz789"
 
     def setUp(self):
+        # The sandbox is the DATA ROOT: jobs resolves data/ against the cwd and
+        # reads settings through config (data-root .env first).
         self.tmp = Path(tempfile.mkdtemp(prefix="jobs-avail-"))
         (self.tmp / "data" / "backfill").mkdir(parents=True)
-        self._prev_root = jobs.REPO_ROOT
-        jobs.REPO_ROOT = self.tmp
+        self._sandbox = isolated_config(self.tmp)
+        self._sandbox.__enter__()
 
     def tearDown(self):
-        jobs.REPO_ROOT = self._prev_root
+        self._sandbox.__exit__(None, None, None)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _write_env(self, **values):
@@ -416,11 +427,76 @@ class ArchiveApplyStepsTest(unittest.TestCase):
         self.assertEqual(
             [(s.label, s.argv, s.on_fail) for s in steps],
             [
-                ("Archive apply", ["archive.py", "--apply"], "stop"),
-                ("Refresh duplicate check", ["hash_index.py", "build"], "continue"),
-                ("Update unsave list", ["export_unsave_list.py"], "continue"),
+                ("Archive apply", [_app("archive.py"), "--apply"], "stop"),
+                ("Refresh duplicate check", [_app("hash_index.py"), "build"], "continue"),
+                ("Update unsave list", [_app("export_unsave_list.py")], "continue"),
             ],
         )
+
+
+class DataRootJobsTest(unittest.TestCase):
+    """Jobs in a split layout: the pipeline scripts live in the app folder, the
+    data in the data root (the cwd). Every step must name its script by absolute
+    path, each child must run IN the data root, and a secret that exists only in
+    data/config.env must still be masked in the streamed output."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="jobs-dataroot-")).resolve()
+        self.scripts = Path(tempfile.mkdtemp(prefix="jobs-scripts-"))
+        self._sandbox = isolated_config(self.tmp)
+        self._sandbox.__enter__()
+
+    def tearDown(self):
+        self._sandbox.__exit__(None, None, None)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        shutil.rmtree(self.scripts, ignore_errors=True)
+
+    def test_every_pipeline_step_names_an_absolute_app_script(self):
+        pipelines = [jobs.ingest_steps(), jobs.backfill_steps(5), jobs.export_unsave_steps(),
+                     jobs.archive_dryrun_steps(), jobs.archive_apply_steps()]
+        seen = 0
+        for steps in pipelines:
+            for step in steps:
+                if step.argv is None:
+                    continue  # the cooldown pause
+                script = Path(step.argv[0])
+                self.assertTrue(script.is_absolute(), step.argv)
+                self.assertEqual(script.parent, jobs.REPO_ROOT, step.argv)
+                self.assertTrue(script.is_file(), step.argv)
+                seen += 1
+        self.assertEqual(seen, 14)
+
+    def test_child_runs_in_the_data_root(self):
+        script = _script(self.scripts, "where.py", """
+            import os
+            print("CWD=" + os.getcwd())
+        """)
+        events = list(jobs.run_steps([Step("Where", [script], "stop")], threading.Event(), False))
+        cwd_lines = [l for l in _lines(events) if l.startswith("CWD=")]
+        self.assertEqual(len(cwd_lines), 1)
+        self.assertEqual(Path(cwd_lines[0][4:]).resolve(), self.tmp)
+        self.assertNotEqual(Path(cwd_lines[0][4:]).resolve(), jobs.REPO_ROOT)
+
+    def test_secret_only_in_config_env_is_redacted_in_stream(self):
+        import config
+        secret = "CONFIGonlySECRETvalue123"
+        config.save_setup({"REDDIT_SESSION_COOKIE": f"reddit_session={secret}"})
+        self.assertFalse((self.tmp / ".env").exists())  # config.env is the ONLY source
+        script = _script(self.scripts, "leak.py", f"""
+            import os
+            cookie = os.environ.get("REDDIT_SESSION_COOKIE", "")
+            print("child saw " + str(len(cookie)) + " chars")
+            print("raw " + cookie.split("=", 1)[-1])
+            print("literal {secret} mid-line")
+        """)
+        events = list(jobs.run_steps([Step("Leak", [script], "stop")], threading.Event(), False))
+        lines = _lines(events)
+        # The child got the value from config.env through its environment...
+        self.assertIn(f"child saw {len('reddit_session=' + secret)} chars", lines)
+        # ...and no streamed line carries it.
+        self.assertFalse(any(secret in l for l in lines), lines)
+        self.assertIn("raw [redacted]", lines)
+        self.assertIn("literal [redacted] mid-line", lines)
 
 
 if __name__ == "__main__":
