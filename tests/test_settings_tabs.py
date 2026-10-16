@@ -604,6 +604,30 @@ class SyncTabTest(SettingsTabsTestCase):
         self.assertFalse(self.apply_enabled(result))
         self.assertIn("writes nothing", self.status(result))
 
+    # -- the archive gate (Scan reads ARCHIVE_DIR) --------------------------
+
+    def test_unreachable_archive_gates_scan_and_shows_the_banner(self):
+        """Opening the tab with the archive unreachable surfaces the problem
+        sentence and disables Scan (and Apply) -- re-checked on every open."""
+        self.seed()
+        prev = self.review.archive_dir
+        try:
+            self.review.archive_dir = self.tmp / "no-such-archive"
+            result = self.review._sync_tab_open()
+            problem = result[self.review.sync_archive_problem_md]
+            self.assertTrue(problem["visible"])
+            self.assertIn("isn't reachable", problem["value"])
+            self.assertFalse(result[self.review.sync_scan_btn]["interactive"])
+            self.assertFalse(self.apply_enabled(result))
+        finally:
+            self.review.archive_dir = prev
+
+    def test_reachable_archive_enables_scan_and_hides_the_banner(self):
+        self.seed()
+        result = self.review._sync_tab_open()
+        self.assertFalse(result[self.review.sync_archive_problem_md]["visible"])
+        self.assertTrue(result[self.review.sync_scan_btn]["interactive"])
+
     # -- the repaint contract ----------------------------------------------
 
     def test_every_sync_event_repaints_every_registered_component(self):
@@ -612,7 +636,12 @@ class SyncTabTest(SettingsTabsTestCase):
             self.review.sync_report_md, self.review.sync_status_md,
             self.review.sync_apply_btn,
         }
-        self.assertEqual(set(self.review._sync_tab_open()), registered)
+        # Opening the tab additionally repaints the archive-problem line and the
+        # Scan button (the archive gate), so its set is the superset.
+        open_registered = registered | {
+            self.review.sync_archive_problem_md, self.review.sync_scan_btn,
+        }
+        self.assertEqual(set(self.review._sync_tab_open()), open_registered)
         self.assertEqual(set(self.scan()), registered)
         self.assertEqual(set(self.review.on_sync_apply()), registered)
 

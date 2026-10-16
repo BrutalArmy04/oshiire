@@ -13,10 +13,12 @@ run. This also means resolving one root cause (e.g. a franchise alias) clears
 every other flagged entry that shared it, automatically, on the next render.
 """
 import copy
+import os
 import warnings
 from pathlib import Path
 
 import gradio as gr
+from dotenv import load_dotenv
 from starlette.exceptions import StarletteDeprecationWarning
 
 from archive import get_archive_dir, plan_moves
@@ -56,8 +58,9 @@ CUSTOM_CSS = """
    subreddit-map confirm panel -- a decision panel should look alike in both
    UIs. Static here, unlike review.py's, since this panel has only one tier. */
 .confirm-panel {
-    border: 2px solid #d97706;
-    background: rgba(217, 119, 6, 0.1);
+    border: 2px solid var(--warn, #d97706);
+    background: color-mix(in srgb, var(--warn, #d97706) 14%, transparent);
+    color: var(--ink, #1e2a44);
     border-radius: 8px;
     padding: 12px;
 }
@@ -71,7 +74,15 @@ FLAG_CATEGORY_ORDER = {
     "needs_shortname": 2,
 }
 
-archive_dir = get_archive_dir()
+# ARCHIVE_DIR is read SOFTLY at import (like review.py does) rather than through
+# archive.get_archive_dir(), which sys.exit()s when it's unset or missing. review.py
+# now imports this module to build the Resolve page inside its own process, and an
+# import must only load state -- never terminate the host. Standalone `python
+# resolve.py` re-resolves it strictly in __main__ below, so a misconfigured archive
+# still fails fast there.
+load_dotenv()
+_archive_dir_value = os.environ.get("ARCHIVE_DIR")
+archive_dir = Path(_archive_dir_value) if _archive_dir_value else None
 layout = load_layout()
 shortname_entries = load_shortname_map(layout)
 series_aliases = load_series_aliases()
@@ -97,6 +108,31 @@ def _recompute():
     all_rows, _ = plan_moves(manifest, layout, shortname_entries, archive_dir, series_aliases)
     candidates = [r for r in all_rows if r["outcome"] == "flag" and r["flag_reason"] != "missing_directory"]
     rows = sorted(candidates, key=_sort_key)
+
+
+def reload_state():
+    """Re-read everything Resolve derives from disk, IN PLACE, then recompute the
+    flagged queue and reset the cursor.
+
+    Resolve keeps its OWN module-level copies of the manifest, layout, shortname
+    entries and series aliases (separate from review.py's). Disk is the single
+    source of truth: a snapshot of those copies taken before another page wrote
+    them would, on this page's Undo, silently revert that other page's write. So
+    the host re-reads here every time Resolve is opened, dropping any
+    half-finished state. manifest/layout are refreshed in place (clear/update)
+    because handler closures hold those references; the rest rebind exactly where
+    the existing code already rebinds them."""
+    global shortname_entries, series_aliases, current_index, last_action, pending_alias
+    manifest.clear()
+    manifest.update(load_manifest())
+    layout.clear()
+    layout.update(load_layout())
+    shortname_entries = load_shortname_map(layout)
+    series_aliases = load_series_aliases()
+    last_action = None
+    pending_alias = None
+    current_index = 0
+    _recompute()
 
 
 def _current_row():
@@ -617,7 +653,9 @@ def on_save_shortname(code_text):
 
 
 def on_load():
-    _recompute()
+    """Open function the host chains on the Resolve menu click (and standalone
+    demo.load). Re-reads disk every time -- see reload_state."""
+    reload_state()
     return _render_current()
 
 
@@ -665,7 +703,12 @@ def on_undo():
     return _render_current("Undone.")
 
 
-with gr.Blocks(title="Oshiire resolve flags") as demo:
+def build_ui():
+    """Build Resolve's components and event wiring into the CURRENT Blocks
+    context (review.py calls this inside its own gr.Blocks; standalone __main__
+    below calls it inside its own). Returns (outputs, open_fn): the host chains
+    open_fn on the Resolve menu click, and standalone chains it via demo.load.
+    No demo.load here -- the open trigger belongs to whoever owns the Blocks."""
     status_md = gr.Markdown()
     header_md = gr.Markdown()
 
@@ -772,8 +815,6 @@ with gr.Blocks(title="Oshiire resolve flags") as demo:
         override_group,
     ]
 
-    demo.load(fn=on_load, outputs=outputs)
-
     new_folder_style_radio.change(
         fn=on_style_change,
         inputs=[new_folder_style_radio],
@@ -799,6 +840,14 @@ with gr.Blocks(title="Oshiire resolve flags") as demo:
 
     undo_btn.click(fn=on_undo, outputs=outputs)
 
+    return outputs, on_load
+
 
 if __name__ == "__main__":
+    # Strict validation for the standalone process: a misconfigured archive
+    # fails fast here with a clear message, unlike the soft import above.
+    archive_dir = get_archive_dir()
+    with gr.Blocks(title="Oshiire resolve flags") as demo:
+        _outputs, _open = build_ui()
+        demo.load(fn=_open, outputs=_outputs)
     demo.launch(css=CUSTOM_CSS, inbrowser=True)

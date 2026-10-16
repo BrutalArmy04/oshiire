@@ -6,6 +6,7 @@ destination directory; anything that doesn't resolve to an existing folder is
 flagged for Slice 3b's review UI instead.
 """
 import argparse
+import json
 import os
 import re
 import shutil
@@ -544,6 +545,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Route approved manifest entries into the archive.")
     parser.add_argument("--apply", "--execute", dest="apply", action="store_true",
                          help="Actually move files and update the manifest. Default is dry-run.")
+    parser.add_argument("--json", dest="json", action="store_true",
+                         help="After the human table, print the plan rows as machine-readable "
+                              "JSON lines (consumed by the app's Preview filing table).")
     args = parser.parse_args()
 
     archive_dir = get_archive_dir()
@@ -557,6 +561,9 @@ def main() -> None:
     print_table(rows)
     print_summary(rows, skipped_status_counts)
 
+    if args.json:
+        print_plan_json(rows)
+
     if args.apply:
         actionable = [r for r in rows if r["outcome"] in ("move", "flag", "copy")]
         indexed = apply_moves(manifest, actionable)
@@ -569,6 +576,67 @@ def main() -> None:
     else:
         print()
         print("Dry-run only -- nothing was moved. Re-run with --apply to perform these moves.")
+        print(summary_line(rows))
+
+
+def summary_line(rows) -> str:
+    """The dry run's machine-readable last line, read by the app's Preview
+    filing page (jobs.parse_summary) and hidden from its log. CLI users can
+    ignore it. moves = images that would be filed, flagged = images that need
+    Resolve first."""
+    moves = sum(1 for r in rows if r["outcome"] == "move")
+    flagged = sum(1 for r in rows if r["outcome"] == "flag")
+    return f"OSHIIRE_SUMMARY moves={moves} flagged={flagged}"
+
+
+# The Preview filing page renders the plan as a real table rather than parsing
+# the padded text one. --json emits one machine-readable PLAN_PREFIX line per
+# planned row; jobs.parse_plan_row reads them and they are hidden from the log,
+# exactly like OSHIIRE_SUMMARY.
+PLAN_PREFIX = "OSHIIRE_PLAN "
+
+# Human-facing Status for one planned row. A single post id can appear on more
+# than one row -- a move row plus a "wallpaper copy" row for the same artwork --
+# and this column is what tells those apart at a glance.
+_PLAN_STATUS = {
+    "move": "move",
+    "flag": "needs Resolve",
+    "missing_file": "missing file",
+    "copy_missing_directory": "wallpaper copy (needs folder)",
+}
+
+
+def _plan_status(row) -> str:
+    if row["outcome"] == "copy":
+        target = row.get("copy_target")
+        return f"wallpaper copy ({target})" if target else "wallpaper copy"
+    return _PLAN_STATUS.get(row["outcome"], row["outcome"])
+
+
+def plan_display_rows(rows):
+    """The plan as structured rows for the Preview filing table: one dict per
+    planned row, with needs-Resolve (flag) rows first. Display only -- apply_moves
+    still consumes the raw rows in their original order (a wallpaper copy must
+    stay after the move it copies from)."""
+    def to_dict(row):
+        return {
+            "image": row["post_id"],
+            "franchise": ", ".join(row.get("franchise") or []) or "-",
+            "character": ", ".join(row.get("characters") or []) or "-",
+            "destination": row.get("dest_display") or "-",
+            "status": _plan_status(row),
+            "needs_resolve": row["outcome"] == "flag",
+        }
+    # sorted() is stable, so order WITHIN each group is the original plan order.
+    return sorted((to_dict(r) for r in rows),
+                  key=lambda d: 0 if d["needs_resolve"] else 1)
+
+
+def print_plan_json(rows) -> None:
+    """Emit one PLAN_PREFIX JSON line per planned row (see plan_display_rows).
+    Read by the Preview filing page; CLI users and the log ignore these lines."""
+    for row in plan_display_rows(rows):
+        print(PLAN_PREFIX + json.dumps(row, ensure_ascii=False))
 
 
 if __name__ == "__main__":

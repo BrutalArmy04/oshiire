@@ -29,3 +29,7 @@ manifest.example.json       text eol=lf
 # deterministic wherever it happens to live -- the only mechanism available.
 # The committed template is in the repo, so it can be pinned:
 known_series_names.example.txt  text eol=lf
+
+# Launchers: the Windows .bat needs CRLF, the POSIX .sh needs LF.
+*.bat  text eol=crlf
+*.sh   text eol=lf

@@ -1,0 +1,10 @@
+# Developer-only tools. NOT needed to run Oshiire -- install only for building
+# the font assets and running the opt-in end-to-end test (OSHIIRE_E2E=1).
+#   pip install -r requirements-dev.txt
+#   python -m playwright install chromium   # (or: ... install msedge)
+
+# Drives a real browser in tests/test_quit_e2e.py (the Quit end-to-end test).
+playwright==1.63.0
+
+# Subsets/builds the bundled web fonts in assets/fonts/.
+fonttools

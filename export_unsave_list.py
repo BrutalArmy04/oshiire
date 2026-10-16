@@ -42,6 +42,16 @@ from manifest import load_manifest
 LOG_PATH = Path("data/backfill") / "backfill_log.jsonl"
 OUTPUT_PATH = Path("data/unsave_list.json")
 
+# One machine-readable line the Free-up-space job page reads its count from
+# (jobs.parse_unsave_count), never by parsing the human summary above. Hidden
+# from the displayed job log exactly like archive.py's OSHIIRE_SUMMARY line.
+COUNT_PREFIX = "OSHIIRE_UNSAVE "
+
+
+def count_line(total: int) -> str:
+    """The structured safe-to-unsave count, e.g. `OSHIIRE_UNSAVE total=42`."""
+    return f"{COUNT_PREFIX}total={int(total)}"
+
 # `dead` reasons that mean the post is genuinely gone (safe to unsave). A `dead`
 # with reason "fetch_failed" is NOT here: a failed HTTP fetch isn't proof of
 # death (could be a transient 429/timeout on a live, uncaptured post).
@@ -213,6 +223,7 @@ def main() -> None:
     print(f"  NEW since last export ...... {new_since_last:>7,}   <- posts to drain")
     print(f"  {prev_note}")
     print(f"Wrote {OUTPUT_PATH} ({len(ids):,} ids)")
+    print(count_line(len(ids)))
 
 
 if __name__ == "__main__":

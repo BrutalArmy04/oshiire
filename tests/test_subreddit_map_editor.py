@@ -1,9 +1,12 @@
 """Regression tests for subreddit_map.json editing (review.py's Settings tab).
 
-Runs against a COPY of the real subreddit_map.json, because the properties
-worth protecting are properties of that file: a top-level `_comment`, eight
-entries carrying a hand-written `_note`, and seven whose franchise is JSON
-null. The real file is never written.
+Runs against a self-contained fixture written to a temp dir (NOT the personal,
+gitignored subreddit_map.json), so the suite passes on a fresh clone with no
+personal config present. The fixture reproduces the properties worth
+protecting: a top-level `_comment`, eight entries carrying a hand-written
+`_note`, and seven whose franchise is JSON null. The real file is never read or
+written; every count below is derived from the fixture at setUp, never
+hardcoded.
 
 What these pin down, in the order the bugs would bite:
 
@@ -23,7 +26,6 @@ What these pin down, in the order the bugs would bite:
     python tests/test_subreddit_map_editor.py
 """
 import json
-import os
 import shutil
 import sys
 import tempfile
@@ -35,7 +37,66 @@ sys.path.insert(0, str(REPO))
 
 import tagger  # noqa: E402
 
-REAL_MAP = REPO / "subreddit_map.json"
+
+# A self-contained map that carries exactly the shapes the tests exercise:
+#   - a top-level `_comment` (an underscore key the editor must preserve),
+#   - 8 entries with a hand-written `_note` (one of them, acheronmains, also
+#     carries a `character`), to prove a save MERGES rather than rebuilds,
+#   - 7 entries whose `franchise` is JSON null (two of those are also noted),
+#   - plain entries (asuka, raidenmains) used by the rename / count tests.
+# Every subreddit and franchise here is invented; only the SHAPES matter.
+FIXTURE = {
+    "_comment": "Synthetic fixture for the editor tests. Not a real sub map.",
+
+    # plain Shape-A entry, no note -- the sentinel/rename/count target
+    "asuka": {"franchise": "Evangelion", "character": "Asuka"},
+    "raidenmains": {"franchise": "Genshin Impact", "character": "Raiden"},
+
+    # noted entries (8 total, counting the two null-franchise ones below)
+    "acheronmains": {
+        "franchise": "Honkai: Star Rail",
+        "character": "Acheron",
+        "_note": "Shape A with a character; the character must survive a save.",
+    },
+    "hutaomains": {
+        "franchise": "Genshin Impact",
+        "character": "Hu Tao",
+        "_note": "Shape A; explicit entry fixes the folder spelling.",
+    },
+    "starfallchronicle": {
+        "franchise": "Starfall Chronicle",
+        "_note": "Shape B; franchise certain, character parsed from the title.",
+    },
+    "genshinimpact": {
+        "franchise": "Genshin Impact",
+        "_note": "Shape B for a big nested franchise.",
+    },
+    "hololive": {
+        "franchise": "Hololive",
+        "_note": "VTuber agency is a valid franchise, not noise.",
+    },
+    "nikke": {
+        "franchise": "NIKKE",
+        "_note": "Shape B filed by shortname.",
+    },
+
+    # plain null-franchise entries (generic art subs)
+    "awwnime": {"franchise": None},
+    "imaginarywaifus": {"franchise": None},
+    "wallpaperdump": {"franchise": None},
+    "animeart": {"franchise": None},
+    "mangacaps": {"franchise": None},
+
+    # null AND noted (2) -- so notes=8 and nulls=7 overlap by two
+    "originaldump1": {
+        "franchise": None,
+        "_note": "Generic art sub; the title supplies everything.",
+    },
+    "originaldump2": {
+        "franchise": None,
+        "_note": "A '[original]' title is an OC signal: no character, no franchise.",
+    },
+}
 
 
 def _load(path):
@@ -46,23 +107,30 @@ class SubredditMapEditorTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="oshiire-submap-"))
         self.path = self.tmp / "subreddit_map.json"
-        shutil.copy(REAL_MAP, self.path)
+        self.path.write_text(json.dumps(FIXTURE, indent=2, ensure_ascii=False),
+                             encoding="utf-8")
         self.before = _load(self.path)
         self.entries_before = {k: v for k, v in self.before.items() if not k.startswith("_")}
+        # Every count the tests assert is derived from the fixture here, so the
+        # fixture is the single source of truth and no literal total can drift.
+        self.n_entries = len(self.entries_before)
+        self.note_keys = [k for k, v in self.entries_before.items() if "_note" in v]
+        self.null_keys = [k for k, v in self.entries_before.items()
+                          if "franchise" in v and v["franchise"] is None]
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    # -- the shape of the real file, so the numbers below mean something ----
+    # -- the shape of the fixture, so the numbers below mean something ------
 
     def test_fixture_has_the_properties_under_test(self):
         self.assertIn("_comment", self.before)
-        notes = [k for k, v in self.entries_before.items() if "_note" in v]
-        nulls = [k for k, v in self.entries_before.items()
-                 if "franchise" in v and v["franchise"] is None]
-        self.assertEqual(len(notes), 8, f"expected 8 noted entries, got {notes}")
-        self.assertEqual(len(nulls), 7, f"expected 7 null franchises, got {nulls}")
-        self.assertEqual(len(self.entries_before), 167)
+        self.assertEqual(len(self.note_keys), 8, f"expected 8 noted entries, got {self.note_keys}")
+        self.assertEqual(len(self.null_keys), 7, f"expected 7 null franchises, got {self.null_keys}")
+        # The write/read round-trip dropped nothing: the loaded file has the
+        # same entry count as the fixture source it was built from.
+        expected = len([k for k in FIXTURE if not k.startswith("_")])
+        self.assertEqual(self.n_entries, expected)
 
     # -- hazard 1: the public reader raises, it does not exit ---------------
 
@@ -116,9 +184,7 @@ class SubredditMapEditorTest(unittest.TestCase):
 
         nulls_after = [k for k, v in after.items()
                        if not k.startswith("_") and "franchise" in v and v["franchise"] is None]
-        nulls_before = [k for k, v in self.entries_before.items()
-                        if "franchise" in v and v["franchise"] is None]
-        self.assertEqual(nulls_after, nulls_before, "the 7 null franchises must stay null")
+        self.assertEqual(nulls_after, self.null_keys, "the 7 null franchises must stay null")
 
         self.assertEqual(list(after), list(self.before), "key order must be unchanged")
 
@@ -155,13 +221,13 @@ class SubredditMapEditorTest(unittest.TestCase):
         def count():
             return len([k for k in _load(self.path) if not k.startswith("_")])
 
-        self.assertEqual(count(), 167)
+        self.assertEqual(count(), self.n_entries)
         tagger.save_subreddit_map_entry("asuka", "Evangelion", "Asuka", path=self.path)
-        self.assertEqual(count(), 167, "saving an existing entry must not change the count")
+        self.assertEqual(count(), self.n_entries, "saving an existing entry must not change the count")
         tagger.remove_subreddit_map_entry("asuka", path=self.path)
-        self.assertEqual(count(), 166)
+        self.assertEqual(count(), self.n_entries - 1)
         tagger.save_subreddit_map_entry("asuka", "Evangelion", "Asuka", path=self.path)
-        self.assertEqual(count(), 167)
+        self.assertEqual(count(), self.n_entries)
 
     def test_rename_puts_the_new_key_at_the_end(self):
         """Accepted behaviour -- the Settings tab's status line says so."""
@@ -170,7 +236,7 @@ class SubredditMapEditorTest(unittest.TestCase):
         after = _load(self.path)
         self.assertNotIn("asuka", after)
         self.assertEqual(list(after)[-1], "asukalangley")
-        self.assertEqual(len([k for k in after if not k.startswith("_")]), 167)
+        self.assertEqual(len([k for k in after if not k.startswith("_")]), self.n_entries)
 
     def test_new_entry_is_appended_and_disturbs_nothing(self):
         tagger.save_subreddit_map_entry("brandnewsub", "Some Series", path=self.path)

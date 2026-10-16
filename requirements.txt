@@ -1,7 +1,19 @@
 feedparser>=6.0
 python-dotenv>=1.0
 requests>=2.31
-gradio>=4.0
+# css= is passed to launch() (Gradio 6 API) and gr.Image(buttons=...) is
+# Gradio 6 API, so <6 cannot run review.py.
+gradio==6.19.0
+
+# Native app window (app.py opens the review UI in an OS window via pywebview;
+# pulls pythonnet on Windows for the WebView2 backend). Falls back to the
+# browser if no GUI backend is available (e.g. Linux without GTK/Qt).
+pywebview==6.2.1
+
+# "Stop it and start fresh" (a second launch) finds the running Oshiire by its
+# command line -- never by image name -- on any Windows version; app.py falls
+# back to PowerShell/wmic only if this is somehow absent.
+psutil==7.2.2
 
 # old.reddit.com login-walls anything whose TLS/HTTP2 fingerprint isn't a
 # real browser's -- plain `requests` gets the login page even with a valid
