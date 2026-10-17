@@ -20,6 +20,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 import instance
+import review_sandbox
 
 
 # A tiny program that tries to take the lock and reports the result. Run as a
@@ -117,7 +118,7 @@ class ReviewSingleInstanceTest(unittest.TestCase):
             self.assertEqual(holder.stdout.readline().strip(), "LOCKED")
             out = subprocess.run(
                 [sys.executable, str(REPO / "review.py")],
-                cwd=str(sandbox),
+                cwd=str(sandbox), env=review_sandbox.child_environ(),
                 capture_output=True, text=True, timeout=300,
             )
             self.assertEqual(out.returncode, 1, out.stderr)

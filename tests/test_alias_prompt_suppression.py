@@ -51,6 +51,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
+from review_sandbox import ReviewSandbox  # noqa: E402
+
 # Safe at module scope, unlike review: archive.py binds nothing to the cwd at
 # import (its load_dotenv call is inside main), so it needs no sandbox and no
 # sys.modules juggling.
@@ -116,30 +118,21 @@ class AliasPromptSuppressionTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls._tmp = tempfile.mkdtemp(prefix="oshiire-suppress-")
-        cls._prev_cwd = os.getcwd()
         _build_sandbox(Path(cls._tmp))
-        os.chdir(cls._tmp)
-        cls._prev_archive = os.environ.pop("ARCHIVE_DIR", None)
         # review.py binds its manifest, layout and queue at IMPORT time, from
         # whatever cwd it was first imported in -- so the module is really a
         # handle on one sandbox. tests/test_render_contract.py imports it too,
         # and discovery runs this file first; leaving our copy in sys.modules
         # hands that suite THIS sandbox's manifest and every one of its entries
         # goes missing. Take the slot, then give it back.
-        cls._prev_module = sys.modules.pop("review", None)
-        with redirect_stdout(StringIO()):
-            import review
-        cls.review = review
+        # A private review copy bound to this sandbox (cwd, scrubbed env), whatever
+        # order the test modules load in -- see tests/review_sandbox.py.
+        cls._sandbox = ReviewSandbox(cls._tmp)
+        cls.review = review = cls._sandbox.activate()
 
     @classmethod
     def tearDownClass(cls):
-        os.chdir(cls._prev_cwd)
-        if cls._prev_archive is not None:
-            os.environ["ARCHIVE_DIR"] = cls._prev_archive
-        if cls._prev_module is not None:
-            sys.modules["review"] = cls._prev_module
-        else:
-            sys.modules.pop("review", None)
+        cls._sandbox.deactivate()
         shutil.rmtree(cls._tmp, ignore_errors=True)
 
     def setUp(self):

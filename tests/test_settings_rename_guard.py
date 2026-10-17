@@ -29,6 +29,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
+from review_sandbox import ReviewSandbox  # noqa: E402
+
 
 PANEL_LAYOUT = {
     "archive_dir_env": "ARCHIVE_DIR",
@@ -72,19 +74,15 @@ class FormIntentTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls._tmp = tempfile.mkdtemp(prefix="oshiire-intent-")
-        cls._prev_cwd = os.getcwd()
         _build_panel_sandbox(Path(cls._tmp))
-        os.chdir(cls._tmp)
-        cls._prev_archive = os.environ.pop("ARCHIVE_DIR", None)
-        with redirect_stdout(StringIO()):
-            import review
-        cls.review = review
+        # A private review copy bound to this sandbox (cwd, scrubbed env), whatever
+        # order the test modules load in -- see tests/review_sandbox.py.
+        cls._sandbox = ReviewSandbox(cls._tmp)
+        cls.review = review = cls._sandbox.activate()
 
     @classmethod
     def tearDownClass(cls):
-        os.chdir(cls._prev_cwd)
-        if cls._prev_archive is not None:
-            os.environ["ARCHIVE_DIR"] = cls._prev_archive
+        cls._sandbox.deactivate()
         shutil.rmtree(cls._tmp, ignore_errors=True)
 
     def _check(self, same, noun, existing, cases):
@@ -242,19 +240,15 @@ class SettingsRenameGuardTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls._tmp = tempfile.mkdtemp(prefix="oshiire-rename-")
-        cls._prev_cwd = os.getcwd()
         _build_panel_sandbox(Path(cls._tmp))
-        os.chdir(cls._tmp)
-        cls._prev_archive = os.environ.pop("ARCHIVE_DIR", None)
-        with redirect_stdout(StringIO()):
-            import review
-        cls.review = review
+        # A private review copy bound to this sandbox (cwd, scrubbed env), whatever
+        # order the test modules load in -- see tests/review_sandbox.py.
+        cls._sandbox = ReviewSandbox(cls._tmp)
+        cls.review = review = cls._sandbox.activate()
 
     @classmethod
     def tearDownClass(cls):
-        os.chdir(cls._prev_cwd)
-        if cls._prev_archive is not None:
-            os.environ["ARCHIVE_DIR"] = cls._prev_archive
+        cls._sandbox.deactivate()
         shutil.rmtree(cls._tmp, ignore_errors=True)
 
     def _reset_sandbox(self):

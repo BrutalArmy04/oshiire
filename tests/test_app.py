@@ -12,6 +12,7 @@ only check that main() bails out before stdio when the lock is already held.)
 import contextlib
 import io
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -26,6 +27,7 @@ sys.path.insert(0, str(REPO))
 
 import app
 import jobs
+import review_sandbox
 
 # main() now chdirs to datahome.data_root(), merges settings into os.environ
 # (config.load) and writes starter files. For every test in this module, point
@@ -443,10 +445,17 @@ class LaunchAppExistsTest(unittest.TestCase):
             import review
             print("CALLABLE" if callable(review.launch_app) else "NO")
         """)
-        out = subprocess.run(
-            [sys.executable, "-c", script],
-            capture_output=True, text=True, timeout=300,
-        )
+        # cwd = a sandbox data root (review reads its files from the cwd), the
+        # repo on PYTHONPATH, and the config keys + .env scrubbed from the env.
+        root = review_sandbox.new_root(prefix="oshiire-launchapp-")
+        try:
+            out = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=str(root), env=review_sandbox.child_environ(),
+                capture_output=True, text=True, timeout=300,
+            )
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
         self.assertIn("CALLABLE", out.stdout, out.stderr)
 
 

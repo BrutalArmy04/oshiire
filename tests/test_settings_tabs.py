@@ -50,6 +50,8 @@ from unittest.mock import patch
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
+from review_sandbox import ReviewSandbox  # noqa: E402
+
 import shortname as shortname_module  # noqa: E402
 import sync  # noqa: E402
 from manifest import load_manifest, save_manifest  # noqa: E402
@@ -112,33 +114,21 @@ class SettingsTabsTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls._tmp = tempfile.mkdtemp(prefix="oshiire-tabs-")
-        cls._prev_cwd = os.getcwd()
         tmp = Path(cls._tmp)
         _build_sandbox(tmp)
-        os.chdir(tmp)
         # Pointed at the SANDBOX archive, not unset: the Sync tab is the one
         # panel that needs an ARCHIVE_DIR to do anything at all.
-        cls._prev_archive = os.environ.pop("ARCHIVE_DIR", None)
-        os.environ["ARCHIVE_DIR"] = str(tmp / "archive")
         # tests/test_render_contract.py imports review too, and leaving our
         # copy in sys.modules would hand that suite THIS sandbox's manifest.
         # Take the slot, then give it back.
-        cls._prev_module = sys.modules.pop("review", None)
-        with redirect_stdout(StringIO()):
-            import review
-        cls.review = review
+        # (ReviewSandbox does both, and scrubs the other config keys -- see
+        # tests/review_sandbox.py.)
+        cls._sandbox = ReviewSandbox(tmp, env={"ARCHIVE_DIR": str(tmp / "archive")})
+        cls.review = cls._sandbox.activate()
 
     @classmethod
     def tearDownClass(cls):
-        os.chdir(cls._prev_cwd)
-        if cls._prev_archive is not None:
-            os.environ["ARCHIVE_DIR"] = cls._prev_archive
-        else:
-            os.environ.pop("ARCHIVE_DIR", None)
-        if cls._prev_module is not None:
-            sys.modules["review"] = cls._prev_module
-        else:
-            sys.modules.pop("review", None)
+        cls._sandbox.deactivate()
         shutil.rmtree(cls._tmp, ignore_errors=True)
 
     def setUp(self):

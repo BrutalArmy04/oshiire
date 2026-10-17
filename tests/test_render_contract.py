@@ -44,18 +44,14 @@ import gradio as gr
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
+from review_sandbox import ReviewSandbox, build_sandbox, child_environ  # noqa: E402
+
 EXPECTED_OUTPUT_COUNT = 27
 
 
 def _build_sandbox(tmp: Path) -> None:
     """A minimal but REAL project tree: review.py reads all of this at import."""
-    shutil.copy(REPO / "layout.example.json", tmp / "layout.json")
-    shutil.copy(REPO / "known_series_names.example.txt", tmp / "known_series_names.txt")
-    # tagger.subreddit_is_mapped exits the process if this is absent, and
-    # on_accept consults it. "TestSub" is deliberately not in the example map,
-    # so the accept path reaches the confirm panel.
-    shutil.copy(REPO / "subreddit_map.example.json", tmp / "subreddit_map.json")
-
+    # The shared tree (tests/review_sandbox.py's build_sandbox) plus one pending image.
     staging = tmp / "staging"
     staging.mkdir()
     image_path = staging / "t3_test01.jpg"
@@ -79,37 +75,35 @@ def _build_sandbox(tmp: Path) -> None:
             "crossover": False,
         }
     }
-    (tmp / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    # tagger.subreddit_is_mapped exits the process if this is absent, and
+    # on_accept consults it. "TestSub" is deliberately not in the example map,
+    # so the accept path reaches the confirm panel.
+    build_sandbox(tmp, manifest)
 
 
 class RenderContractTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls._tmp = tempfile.mkdtemp(prefix="oshiire-render-")
-        cls._prev_cwd = os.getcwd()
         tmp = Path(cls._tmp)
         _build_sandbox(tmp)
-        os.chdir(tmp)
         # ARCHIVE_DIR is read softly by review.py; unset it so the sandbox can
         # never reach the user's real archive.
-        cls._prev_archive = os.environ.pop("ARCHIVE_DIR", None)
         # Importing review.py runs its whole module body (manifest load, hash
         # warm-up, gr.Blocks construction) against THIS sandbox. Another test
         # file may have imported review first (a cached import is a no-op, so the
         # sandbox fixture would never load), so reload it here: that re-runs the
         # body in this cwd and makes the fixture present regardless of test
         # order. Noisy but side-effect-free here.
-        import importlib
-        with redirect_stdout(StringIO()):
-            import review
-            importlib.reload(review)
-        cls.review = review
+        # (Now done by ReviewSandbox, which unsets ARCHIVE_DIR with the other
+        # config keys and imports a private copy instead of reloading the shared
+        # one -- see tests/review_sandbox.py.)
+        cls._sandbox = ReviewSandbox(tmp)
+        cls.review = cls._sandbox.activate()
 
     @classmethod
     def tearDownClass(cls):
-        os.chdir(cls._prev_cwd)
-        if cls._prev_archive is not None:
-            os.environ["ARCHIVE_DIR"] = cls._prev_archive
+        cls._sandbox.deactivate()
         shutil.rmtree(cls._tmp, ignore_errors=True)
 
     def _render(self, empty_queue: bool):
@@ -765,6 +759,7 @@ class RenderContractTest(unittest.TestCase):
         """)
         out = subprocess.run(
             [sys.executable, "-c", script],
+            cwd=self._tmp, env=child_environ(),
             capture_output=True, text=True, timeout=300,
         )
         self.assertIn("STANDALONE OK", out.stdout, out.stderr)

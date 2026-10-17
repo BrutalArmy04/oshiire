@@ -21,7 +21,14 @@ sys.path.insert(0, str(REPO))
 
 from PIL import Image, ImageFile
 
-import history
+from review_sandbox import ReviewSandbox  # noqa: E402
+
+# history binds the manifest and archive dir at import: import a private copy
+# inside a throwaway data root, and run this module's tests inside it too.
+_sandbox = ReviewSandbox(module="history")
+history = _sandbox.load()
+setUpModule = _sandbox.activate
+tearDownModule = _sandbox.close
 
 
 class ThumbnailForTest(unittest.TestCase):

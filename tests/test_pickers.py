@@ -13,7 +13,15 @@ from unittest import mock
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-import review
+from review_sandbox import ReviewSandbox  # noqa: E402
+
+# review binds its manifest/layout/archive dir at import, and resolve exits when
+# there's no layout.json: import a private copy inside a throwaway data root,
+# and run this module's tests inside it too.
+_sandbox = ReviewSandbox()
+review = _sandbox.load()
+setUpModule = _sandbox.activate
+tearDownModule = _sandbox.close
 
 
 def _field(update, field):
