@@ -43,8 +43,8 @@ from pathlib import Path
 from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
-if str(REPO) not in sys.path:
-    sys.path.insert(0, str(REPO))
+if str(REPO / "src") not in sys.path:
+    sys.path.insert(0, str(REPO / "src"))
 
 import config  # noqa: E402
 
@@ -55,11 +55,11 @@ STATEFUL_MODULES = ("review", "resolve", "history")
 def build_sandbox(tmp, manifest=None):
     """A minimal but REAL project tree: review.py reads all of this at import."""
     tmp = Path(tmp)
-    shutil.copy(REPO / "layout.example.json", tmp / "layout.json")
-    shutil.copy(REPO / "known_series_names.example.txt", tmp / "known_series_names.txt")
+    shutil.copy(REPO / "examples" / "layout.example.json", tmp / "layout.json")
+    shutil.copy(REPO / "examples" / "known_series_names.example.txt", tmp / "known_series_names.txt")
     # tagger.subreddit_is_mapped exits the process if this is absent, and
     # on_accept consults it.
-    shutil.copy(REPO / "subreddit_map.example.json", tmp / "subreddit_map.json")
+    shutil.copy(REPO / "examples" / "subreddit_map.example.json", tmp / "subreddit_map.json")
     (tmp / "staging").mkdir(exist_ok=True)
     (tmp / "manifest.json").write_text(json.dumps(manifest or {}, indent=2), encoding="utf-8")
 

@@ -166,8 +166,8 @@ A few design decisions matter more than the individual scripts:
 Screenshots are from my own archive, except Free up saved space, which uses the example data.
 
 <p align="center">
-  <img src="screenshots/01-home-light.jpg" width="49%" alt="Home menu (light)">
-  <img src="screenshots/02-home-dark.jpg" width="49%" alt="Home menu (dark)">
+  <img src="docs/screenshots/01-home-light.jpg" width="49%" alt="Home menu (light)">
+  <img src="docs/screenshots/02-home-dark.jpg" width="49%" alt="Home menu (dark)">
 </p>
 
 The **home menu**, light and dark — every stage launches from here (**Coming
@@ -175,28 +175,28 @@ in**: Ingest, Backfill, Review; **Putting away**: Preview filing, File images,
 Resolve; History and Manage in the header). Appearance is set in Manage →
 Settings → App.
 
-![Review](screenshots/03-review.jpg)
+![Review](docs/screenshots/03-review.jpg)
 **Review** — approve, fix, or reject each image one at a time before anything is
 filed.
 
-![Subreddit-mapping confirm](screenshots/04-review-confirm-subreddit.jpg)
+![Subreddit-mapping confirm](docs/screenshots/04-review-confirm-subreddit.jpg)
 The subreddit-mapping confirm step — a new subreddit→franchise/character mapping
 is only remembered once you explicitly confirm it; Accept waits until you do.
 
-![Preview filing](screenshots/05-preview-filing.jpg)
+![Preview filing](docs/screenshots/05-preview-filing.jpg)
 **Preview filing** — the dry run that shows where every accepted image would go.
 It moves nothing; it's what you read before **File images**.
 
-![File images](screenshots/06-file-images-done.jpg)
+![File images](docs/screenshots/06-file-images-done.jpg)
 **File images** — the actual move into the archive, gated behind a confirmation
 checkbox so it never runs by accident.
 
-![Settings, rename guard](screenshots/07-settings-rename-guard.jpg)
+![Settings, rename guard](docs/screenshots/07-settings-rename-guard.jpg)
 **Manage → Settings**: edit the config files from the app. Changing an entry's
 name becomes an explicit Rename button, never a silent rename, and a name that
 already exists is refused.
 
-![Free up saved space](screenshots/free-up-space.png)
+![Free up saved space](docs/screenshots/free-up-space.png)
 **Free up saved space** (under **Manage**) — builds the unsave list and walks the
 browser steps that free headroom in Reddit's capped saved listing.
 
@@ -334,7 +334,7 @@ install.bat        (Windows: builds .venv-win)
 ./install.sh       (Linux/macOS: builds .venv)
 ```
 
-Then either copy `.env.example` to `.env` and fill it in, or just start
+Then either copy `examples/.env.example` to `.env` and fill it in, or just start
 `Oshiire.bat` / `oshiire.sh` and let the setup window write
 `data/config.env`. In a checkout the data folder is the repo folder itself.
 Full walkthrough: [From source](docs/SETUP.md#from-source).
@@ -353,7 +353,7 @@ python -m unittest discover -s tests
 
 ### Making a release
 
-1. Bump `__version__` in `version.py`.
+1. Bump `__version__` in `src/version.py`.
 2. Add a `## [X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md` — it becomes the
    release notes.
 3. Commit.

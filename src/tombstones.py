@@ -19,9 +19,9 @@ known placeholder? Two independent signals, either one is a match:
 Reuses hash_index's hashing (never reimplement it) and manifest.py's atomic I/O.
 
 CLI:
-    python tombstones.py sweep [--reject]        # scan staging backfill queue
-    python tombstones.py add <url|file> --label L [--host H] [--max-distance N]
-    python tombstones.py list
+    python src/tombstones.py sweep [--reject]        # scan staging backfill queue
+    python src/tombstones.py add <url|file> --label L [--host H] [--max-distance N]
+    python src/tombstones.py list
 """
 import argparse
 import io
@@ -35,6 +35,7 @@ from typing import Optional
 # the one User-Agent definition. `useragent` is stdlib-only, so this is a
 # top-level import rather than the deferred in-function one it used to be --
 # that deferral existed only to avoid importing ingest.py for a single function.
+import datahome
 import fsutil
 from hash_index import compute_phash, hamming, _configure_pillow
 from manifest import load_manifest, save_manifest
@@ -42,7 +43,7 @@ from useragent import build_user_agent
 
 # Shipped reference data, so it lives with the app files, not in the data root
 # (the cwd). In a git checkout both are the same folder.
-TOMBSTONES_PATH = Path(__file__).resolve().parent / "data" / "tombstones.json"
+TOMBSTONES_PATH = datahome.APP_DIR / "data" / "tombstones.json"
 STAGING_DIR = Path("staging")
 
 # Default Hamming tolerance if a signature omits max_distance. Small: a fixed

@@ -4,7 +4,7 @@ why archive.py flagged it -- mapping/creating a franchise folder, mapping/
 creating a character subfolder, or proposing a shortname. Writes go only to
 layout.json, the shortname file, or a per-image manifest field; this never
 moves files or touches staging -- applying the now-resolved routing is still
-`python archive.py --apply`. Does not modify review.py.
+`python src/archive.py --apply`. Does not modify review.py.
 
 The flagged queue is rebuilt from a fresh plan_moves() call after every
 resolution (not by filtering the manifest for a stale archive_flag field),

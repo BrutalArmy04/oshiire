@@ -30,7 +30,7 @@ import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "src"))
 
 import instance
 
@@ -47,7 +47,7 @@ def _build_sandbox():
     """A minimal runnable copy of the project, built ONLY from committed files
     plus a test-written .env. Never copies the real .env / manifest / data /
     staging / archive. Contents:
-      - every top-level *.py (the code)
+      - every src/*.py (the code)
       - assets/ (the bundled fonts launch_app registers)
       - the committed example configs, renamed into place:
           layout.example.json          -> layout.json
@@ -59,21 +59,27 @@ def _build_sandbox():
       - a no-op .cmd so webbrowser.open launches nothing real
     """
     sandbox = Path(tempfile.mkdtemp(prefix="oshiire-quit-e2e-"))
-    for py in REPO.glob("*.py"):
-        shutil.copy2(py, sandbox / py.name)
+    code = sorted((REPO / "src").glob("*.py"))
+    assert code, "no src/*.py found to copy into the sandbox"
+    (sandbox / "src").mkdir()
+    for py in code:
+        shutil.copy2(py, sandbox / "src" / py.name)
     if (REPO / "assets").is_dir():
         shutil.copytree(REPO / "assets", sandbox / "assets")
 
-    shutil.copy2(REPO / "layout.example.json", sandbox / "layout.json")
-    shutil.copy2(REPO / "subreddit_map.example.json", sandbox / "subreddit_map.json")
-    shutil.copy2(REPO / "manifest.example.json", sandbox / "manifest.json")
+    shutil.copy2(REPO / "examples" / "layout.example.json", sandbox / "layout.json")
+    shutil.copy2(REPO / "examples" / "subreddit_map.example.json", sandbox / "subreddit_map.json")
+    shutil.copy2(REPO / "examples" / "manifest.example.json", sandbox / "manifest.json")
     # The shortname file name is whatever layout.json declares.
     shortname_name = json.loads(
         (sandbox / "layout.json").read_text(encoding="utf-8")
     ).get("shortname_file", "known_series_names.txt")
-    shutil.copy2(REPO / "known_series_names.example.txt", sandbox / shortname_name)
+    shutil.copy2(REPO / "examples" / "known_series_names.example.txt", sandbox / shortname_name)
 
     (sandbox / "data").mkdir()
+    # The sandbox has no feed link, so without this the first-run setup window
+    # opens and blocks startup before the server ever records a port.
+    (sandbox / "data" / "settings.json").write_text('{"setup_done": true}\n', encoding="utf-8")
     (sandbox / "staging").mkdir()
     archive = sandbox / "archive"
     archive.mkdir()
@@ -140,7 +146,7 @@ class QuitEndToEndTest(unittest.TestCase):
         env["BROWSER"] = str(self.noop)          # no real browser opens
         env.pop("OSHIIRE_DEBUG", None)
         self.proc = subprocess.Popen(
-            [str(self.pythonw), str(self.sandbox / "app.py")],
+            [str(self.pythonw), str(self.sandbox / "src" / "app.py")],
             cwd=str(self.sandbox), env=env,
         )
         port = self._wait_for_port()

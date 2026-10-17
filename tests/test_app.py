@@ -23,7 +23,7 @@ from pathlib import Path
 from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "src"))
 
 import app
 import jobs
@@ -441,7 +441,7 @@ class LaunchAppExistsTest(unittest.TestCase):
     def test_review_exposes_callable_launch_app(self):
         script = textwrap.dedent(f"""
             import sys
-            sys.path.insert(0, {str(REPO)!r})
+            sys.path.insert(0, {str(REPO / "src")!r})
             import review
             print("CALLABLE" if callable(review.launch_app) else "NO")
         """)
@@ -474,7 +474,12 @@ class CmdlineRunsOurAppTest(unittest.TestCase):
 
     def test_relative_app_py_with_repo_cwd_matches(self):
         self.assertTrue(app._cmdline_runs_our_app(["pythonw.exe", "app.py"],
-                                                  cwd=str(app.REPO_ROOT)))
+                                                  cwd=str(app.datahome.CODE_DIR)))
+
+    def test_relative_src_app_py_with_root_cwd_matches(self):
+        # What the launchers do: cwd is the Oshiire folder, app.py is in src/.
+        self.assertTrue(app._cmdline_runs_our_app(["pythonw.exe", str(Path("src") / "app.py")],
+                                                  cwd=str(app.datahome.APP_DIR)))
 
     def test_relative_app_py_with_wrong_cwd_does_not_match(self):
         elsewhere = tempfile.mkdtemp(prefix="elsewhere-")
@@ -558,7 +563,7 @@ class PowerShellFallbackTest(unittest.TestCase):
             self.assertIsNone(app._powershell_cmdline(1234))
 
     def test_powershell_scan_returns_matching_pid(self):
-        out = (f'1000|pythonw.exe "{app.REPO_ROOT / "review.py"}"\n'
+        out = (f'1000|pythonw.exe "{app.datahome.CODE_DIR / "review.py"}"\n'
                f'999|pythonw.exe "{app.APP_PY}"\n')
         with mock.patch.object(app, "_run_capture", return_value=out):
             self.assertEqual(app._powershell_scan(), 999)

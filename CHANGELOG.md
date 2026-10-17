@@ -4,6 +4,12 @@ All notable changes to Oshiire are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] - 2026-10-17
+
+### Changed
+- Tidier download folder and GitHub page.
+- If you added Oshiire to the Start menu with 1.0.0, open Manage > Settings > App > Change setup and tick it again.
+
 ## [1.0.0] - 2026-10-17
 
 ### Added

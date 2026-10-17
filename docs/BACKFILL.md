@@ -114,7 +114,7 @@ Two things about this worth knowing before the sweep is running unattended:
 ## Step 1: build the hash index — do this FIRST
 
 ```
-python hash_index.py build
+python src/hash_index.py build
 ```
 
 **Order matters here, and getting it wrong wastes the whole sweep.**
@@ -135,7 +135,7 @@ distance from the higher-resolution original you already have filed.
 Without the index, `backfill.py` refuses to start:
 
 ```
-No index at data/archive_index.db. Run `python hash_index.py build` first.
+No index at data/archive_index.db. Run `python src/hash_index.py build` first.
 ```
 
 That refusal is deliberate. If it ran anyway it would classify your entire
@@ -170,14 +170,14 @@ Three things keep it current, and all three are needed:
   doesn't have it yet. Correct, but narrower: it only covers files the pipeline
   itself handled.
 
-Run `hash_index.py build` yourself after any large manual import.
+Run `src/hash_index.py build` yourself after any large manual import.
 
 ---
 
 ## Step 2: calibrate your own thresholds
 
 ```
-python calibrate.py run --count 200 --start-date 2023-05-01
+python src/calibrate.py run --count 200 --start-date 2023-05-01
 ```
 
 The sweep sorts each fetched image into three buckets by its distance to the
@@ -233,7 +233,7 @@ If you have a folder of files you *know* came from that period, cross-check the
 result:
 
 ```
-python calibrate.py ground-truth --folder <that folder>
+python src/calibrate.py ground-truth --folder <that folder>
 ```
 
 Then edit `OWNED_MAX` and `UNCERTAIN_MAX` near the top of `backfill.py`.
@@ -252,7 +252,7 @@ button does and how to tune it.
 **Advanced / scripted path — the CLI still works:**
 
 ```
-python backfill.py --limit 500
+python src/backfill.py --limit 500
 ```
 
 Batched and resumable. Run it, let it work through 500 rows, stop. Run it again
@@ -330,7 +330,7 @@ The handling:
 Recover anything caught by the above:
 
 ```
-python backfill.py --retry-failed
+python src/backfill.py --retry-failed
 ```
 
 This is an orthogonal pass, not a resume: it re-reads the log for ids recorded
@@ -360,7 +360,7 @@ placeholders are identical for everyone — it is generic reference data, not
 anything derived from your account. To add a host:
 
 ```
-python tombstones.py add <url-or-file> --label <name> --host <host>
+python src/tombstones.py add <url-or-file> --label <name> --host <host>
 ```
 
 Its `hash_bits` must match the index's, or the distances are meaningless; the
@@ -403,7 +403,7 @@ Reddit's API, never logs in, and never clicks anything on Reddit itself.
 **Advanced / scripted path — the CLI still works:**
 
 ```
-python export_unsave_list.py
+python src/export_unsave_list.py
 ```
 
 This builds `data/unsave_list.json` — a flat array of bare post ids that are
@@ -431,7 +431,7 @@ The `Free up saved space` page has buttons for the two steps below (open the
 helper script so your extension installs it; open your saved page). The manual
 route is the same thing by hand:
 
-Install `oshiire_unsave.user.js` in Tampermonkey/Violentmonkey and open your own
+Install `assets/oshiire_unsave.user.js` in Tampermonkey/Violentmonkey and open your own
 old.reddit saved page. It runs in your authenticated browser and clicks the same
 "unsave" links you would by hand — no API calls, no credentials, no network of
 its own. Load `unsave_list.json` into the panel with the file picker.
@@ -518,9 +518,9 @@ drain a batch.
 | Situation | Run |
 |---|---|
 | Routine upkeep | **Backfill** menu entry |
-| After a big archiving run | File images already re-indexes; else `hash_index.py build` |
-| After a large manual import into the archive | `hash_index.py build` |
-| Sweep aborted on rate limits | Wait, then `backfill.py --retry-failed` |
+| After a big archiving run | File images already re-indexes; else `src/hash_index.py build` |
+| After a large manual import into the archive | `src/hash_index.py build` |
+| Sweep aborted on rate limits | Wait, then `src/backfill.py --retry-failed` |
 | Just want new saves, nothing else | **Ingest** menu entry |
 
 ---
@@ -569,7 +569,7 @@ cleanly and rewinds so the interrupted row is retried.
   the ingest for exactly this reason; if the *ingest* step is still what's
   getting throttled, the sweep used up the budget — sweep a smaller batch, or
   run the CLI `ingest.py` separately later.
-- Then `python backfill.py --retry-failed` to recover anything mislabelled.
+- Then `python src/backfill.py --retry-failed` to recover anything mislabelled.
 
 Do not lower `--sleep` to "get it over with". The sweep is designed to be
 finishable over days; hammering gets the whole account throttled harder.
@@ -593,7 +593,7 @@ also the two that keep their post ids *out* of the unsave whitelist.
 To see what is actually failing and why:
 
 ```
-python backfill.py --retry-failed --limit 50
+python src/backfill.py --retry-failed --limit 50
 ```
 
 It prints a `Still failing, by cause` tally — `ReadTimeout`, `HTTP 404`, and so
@@ -637,7 +637,7 @@ sum to more than `processed`.
 
 Plain SQLite. Nothing else in the project opens this file — every write goes
 through `hash_index.py`. Generated from the `CREATE TABLE` statements in
-[`hash_index.py`](../hash_index.py) (`open_index`):
+[`hash_index.py`](../src/hash_index.py) (`open_index`):
 
 ```sql
 CREATE TABLE IF NOT EXISTS images (

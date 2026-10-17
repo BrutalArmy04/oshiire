@@ -1,7 +1,7 @@
 """Single-instance lock, shared by both entry points.
 
 Oshiire has two ways in -- the native desktop window (app.py) and the plain
-browser UI (`python review.py`) -- and only one may run at a time, because both
+browser UI (`python src/review.py`) -- and only one may run at a time, because both
 serve the same Gradio app and hold the same manifest open. Both acquire the lock
 below before launching; whoever loses backs out instead of racing for a port.
 

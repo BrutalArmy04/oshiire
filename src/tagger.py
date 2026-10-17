@@ -67,7 +67,7 @@ def read_subreddit_map(path: Path = SUBREDDIT_MAP_PATH) -> dict:
     """
     if not path.exists():
         raise FileNotFoundError(
-            f"{path} not found. Copy subreddit_map.example.json to {path} "
+            f"{path} not found. Copy examples/subreddit_map.example.json to {path} "
             "(and edit it to match your subs)."
         )
     with path.open("r", encoding="utf-8") as f:
@@ -83,7 +83,7 @@ def _load_subreddit_map(path: Path = SUBREDDIT_MAP_PATH) -> dict:
         data = read_subreddit_map(path)
     except FileNotFoundError:
         print(
-            f"{path} not found. Copy subreddit_map.example.json to {path} "
+            f"{path} not found. Copy examples/subreddit_map.example.json to {path} "
             "(and edit it to match your subs), then retry.",
             file=sys.stderr,
         )

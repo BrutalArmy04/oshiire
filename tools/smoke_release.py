@@ -1,6 +1,6 @@
 """Smoke-test a BUILT release with its own runtime:
 
-    <Oshiire/runtime python> tools/smoke_release.py --app <dir holding app.py>
+    <Oshiire/runtime python> tools/smoke_release.py --app <dir holding src/app.py>
 
 Uses a throwaway OSHIIRE_HOME and refuses to run with a .env anywhere in reach.
 Does what app.py does up to the UI (chdir to the data root, config.load,
@@ -86,7 +86,7 @@ def main():
     # pywebview resolves sys.argv[0] against the cwd while it imports (a
     # default argument in webview/window.py); after the chdir to the data root
     # below, a relative "tools/smoke_release.py" no longer exists. The
-    # launchers pass app.py by absolute path, so match them.
+    # launchers pass src/app.py by absolute path, so match them.
     sys.argv[0] = os.path.abspath(sys.argv[0])
     home = Path(tempfile.mkdtemp(prefix="oshiire-smoke-")).resolve()
 
@@ -94,7 +94,7 @@ def main():
                 "REDDIT_SESSION_COOKIE", "PYTHON_DOTENV_DISABLED"):
         os.environ.pop(key, None)
     os.environ["OSHIIRE_HOME"] = str(home)
-    sys.path.insert(0, str(app))
+    sys.path.insert(0, str(app / "src"))
 
     def no_dotenv():
         for start in (app, home):

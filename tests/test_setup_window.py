@@ -21,7 +21,7 @@ from pathlib import Path
 from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # config_sandbox
 
 import config
@@ -313,7 +313,7 @@ class ShortcutBuilderTest(unittest.TestCase):
         self.assertEqual(spec["path"], self.tmp / "Roaming" / "Microsoft" / "Windows" /
                          "Start Menu" / "Programs" / "Oshiire.lnk")
         self.assertEqual(spec["target"], self.exe_dir / "pythonw.exe")
-        self.assertEqual(spec["arguments"], f'"{self.app / "app.py"}"')
+        self.assertEqual(spec["arguments"], f'"{self.app / "src" / "app.py"}"')
         self.assertEqual(spec["workdir"], self.app)
         self.assertIsNone(spec["icon"])
         self.assertNotIn("IconLocation", spec["script"])
@@ -391,7 +391,7 @@ class ModelFilesTest(unittest.TestCase):
         ok, message = sw.download_model_in_child(executable="py.exe", runner=runner)
         self.assertTrue(ok)
         argv = runner.call_args.args[0]
-        self.assertEqual(argv, ["py.exe", str(datahome.APP_DIR / "setup_window.py"),
+        self.assertEqual(argv, ["py.exe", str(datahome.CODE_DIR / "setup_window.py"),
                                 "--download-model"])
         runner.return_value = mock.Mock(returncode=1)
         self.assertFalse(sw.download_model_in_child(executable="py.exe", runner=runner)[0])

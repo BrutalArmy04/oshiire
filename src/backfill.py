@@ -41,7 +41,7 @@ Invariants:
   * No AI tagging (too slow at 40k scale) -- metadata tagging only.
 
 Usage:
-    python backfill.py [--limit 500] [--offset N] [--sleep 2.0] [--db data/archive_index.db]
+    python src/backfill.py [--limit 500] [--offset N] [--sleep 2.0] [--db data/archive_index.db]
 
 Run with the interpreter that has `imagehash` installed (the one that built the
 index) -- typically the global `python`, not the project venvs.
@@ -478,7 +478,7 @@ def process_image(csv_id, fullname, image_index, title, subreddit, permalink,
 def run(args) -> None:
     db_path = args.db
     if not db_path.exists():
-        print(f"No index at {db_path}. Run `python hash_index.py build` first.", file=sys.stderr)
+        print(f"No index at {db_path}. Run `python src/hash_index.py build` first.", file=sys.stderr)
         sys.exit(1)
     _configure_pillow()
 
@@ -561,7 +561,7 @@ def run(args) -> None:
                 print(f"\n! Reddit returned its login wall instead of the post.\n"
                       f"  old.reddit requires a logged-in session for these pages.\n"
                       f"  Set or refresh REDDIT_SESSION_COOKIE in .env (see\n"
-                      f"  .env.example), then re-run backfill.\n"
+                      f"  examples/.env.example), then re-run backfill.\n"
                       f"  Stopped cleanly at row {i}; it will be retried next run.",
                       file=sys.stderr)
                 print_summary(state, len(rows))
@@ -579,7 +579,7 @@ def run(args) -> None:
                           f"  certainly soft rate-limiting, not dead links. Aborting at row {i}\n"
                           f"  rather than marking hundreds of live rows dead.\n"
                           f"  Wait for the throttle to clear, then recover these with:\n"
-                          f"      python backfill.py --retry-failed", file=sys.stderr)
+                          f"      python src/backfill.py --retry-failed", file=sys.stderr)
                     print_summary(state, len(rows))
                     return
             else:
@@ -647,7 +647,7 @@ def run_retry_failed(args) -> None:
     touching the positional `next_row` cursor (this is not a resume)."""
     db_path = args.db
     if not db_path.exists():
-        print(f"No index at {db_path}. Run `python hash_index.py build` first.", file=sys.stderr)
+        print(f"No index at {db_path}. Run `python src/hash_index.py build` first.", file=sys.stderr)
         sys.exit(1)
     _configure_pillow()
 
@@ -712,7 +712,7 @@ def run_retry_failed(args) -> None:
             _cleanup_tmp()
             print(f"\n! Reddit is rate-limiting (HTTP 429 persisted through backoff).\n"
                   f"  Stopped after {n} row(s); the rest stay queued. Wait for the\n"
-                  f"  throttle to clear, then re-run `python backfill.py --retry-failed`.",
+                  f"  throttle to clear, then re-run `python src/backfill.py --retry-failed`.",
                   file=sys.stderr)
             stopped_early = True
             break
@@ -720,8 +720,8 @@ def run_retry_failed(args) -> None:
             checkpoint()
             _cleanup_tmp()
             print(f"\n! Reddit returned its login wall instead of the post.\n"
-                  f"  Set or refresh REDDIT_SESSION_COOKIE in .env (see .env.example),\n"
-                  f"  then re-run `python backfill.py --retry-failed`.\n"
+                  f"  Set or refresh REDDIT_SESSION_COOKIE in .env (see examples/.env.example),\n"
+                  f"  then re-run `python src/backfill.py --retry-failed`.\n"
                   f"  Stopped after {n} row(s); the rest stay queued.",
                   file=sys.stderr)
             stopped_early = True
@@ -761,7 +761,7 @@ def run_retry_failed(args) -> None:
         print("    (an HTTP 4xx here is a permanently gone post, not throttling. 403 is\n"
               "     retired automatically; the rest keep re-queueing on every run.)")
     if remaining > 0:
-        print("  Re-run `python backfill.py --retry-failed` to continue.")
+        print("  Re-run `python src/backfill.py --retry-failed` to continue.")
 
 
 def process_row(csv_id, fullname, permalink, manifest, db_path, sleep, batch,
@@ -853,7 +853,7 @@ def print_summary(state, total_rows) -> None:
     remaining = max(0, total_rows - next_row)
     print(f"\n  next_row = {next_row:,} of {total_rows:,}  ({remaining:,} rows remaining)")
     if remaining:
-        print(f"  Resume with: python backfill.py --limit {DEFAULT_LIMIT}")
+        print(f"  Resume with: python src/backfill.py --limit {DEFAULT_LIMIT}")
     else:
         print("  Backfill complete -- all CSV rows processed.")
     print(f"  Log: {LOG_PATH.resolve()}")

@@ -31,10 +31,10 @@ location, in a folder layout.json actually knows -- is applied; everything
 else is reported for a human.
 
 Usage:
-    python sync.py                            # dry-run report (default), writes nothing
-    python sync.py --apply                    # repair MOVED_OK entries
-    python sync.py --scope "Genshin Impact"   # limit the report to a subtree
-    python sync.py --apply --db data/archive_index.db
+    python src/sync.py                            # dry-run report (default), writes nothing
+    python src/sync.py --apply                    # repair MOVED_OK entries
+    python src/sync.py --scope "Genshin Impact"   # limit the report to a subtree
+    python src/sync.py --apply --db data/archive_index.db
 """
 import argparse
 import sqlite3
@@ -681,7 +681,7 @@ def main() -> None:
         f"index re-keyed for {result.index_updated}, missed {result.index_missed}."
     )
     if result.index_missed:
-        print("run `python hash_index.py build` to fully resync the index.")
+        print("run `python src/hash_index.py build` to fully resync the index.")
 
 
 if __name__ == "__main__":

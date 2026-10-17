@@ -403,7 +403,7 @@ def suggest_wallpaper(width: Optional[int], height: Optional[int], rules: dict) 
 # CLI
 # --------------------------------------------------------------------------- #
 def main() -> None:
-    """`python imagemeta.py warm` -- hash staging images ahead of time.
+    """`python src/imagemeta.py warm` -- hash staging images ahead of time.
 
     Exists so the cost lands in the maintenance cycle (right after ingest
     brings new images in) rather than in front of the review UI. Hashing a

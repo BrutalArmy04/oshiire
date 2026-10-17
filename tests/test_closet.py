@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "src"))
 
 from review_sandbox import ReviewSandbox  # noqa: E402
 
@@ -322,7 +322,7 @@ class LocalFontTest(unittest.TestCase):
         self.assertEqual(re.findall(r"https?://", css), [])
 
     def test_source_has_no_google_fonts_link(self):
-        src = (REPO / "review.py").read_text(encoding="utf-8")
+        src = (REPO / "src" / "review.py").read_text(encoding="utf-8")
         self.assertNotIn("fonts.googleapis.com", src)
         self.assertNotIn("fonts.gstatic.com", src)
 

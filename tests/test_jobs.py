@@ -18,7 +18,7 @@ import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "src"))
 
 import jobs
 from jobs import Step
@@ -27,8 +27,8 @@ from config_sandbox import isolated_config
 
 
 def _app(name):
-    """A pipeline script's absolute path in the app folder, as jobs builds it."""
-    return str(jobs.REPO_ROOT / name)
+    """A pipeline script's absolute path in the src folder, as jobs builds it."""
+    return str(jobs.datahome.CODE_DIR / name)
 
 
 def _script(dirpath: Path, name: str, body: str) -> str:
@@ -472,7 +472,7 @@ class DataRootJobsTest(unittest.TestCase):
                     continue  # the cooldown pause
                 script = Path(step.argv[0])
                 self.assertTrue(script.is_absolute(), step.argv)
-                self.assertEqual(script.parent, jobs.REPO_ROOT, step.argv)
+                self.assertEqual(script.parent, jobs.datahome.CODE_DIR, step.argv)
                 self.assertTrue(script.is_file(), step.argv)
                 seen += 1
         self.assertEqual(seen, 14)
@@ -486,7 +486,7 @@ class DataRootJobsTest(unittest.TestCase):
         cwd_lines = [l for l in _lines(events) if l.startswith("CWD=")]
         self.assertEqual(len(cwd_lines), 1)
         self.assertEqual(Path(cwd_lines[0][4:]).resolve(), self.tmp)
-        self.assertNotEqual(Path(cwd_lines[0][4:]).resolve(), jobs.REPO_ROOT)
+        self.assertNotEqual(Path(cwd_lines[0][4:]).resolve(), jobs.datahome.CODE_DIR)
 
     def test_secret_only_in_config_env_is_redacted_in_stream(self):
         import config

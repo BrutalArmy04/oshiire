@@ -6,9 +6,9 @@ importable image. Those never reach the review UI (it queues `pending_review`
 only) or resolve.py (flagged entries only), so without a way to see and close
 them they accumulate unseen:
 
-    python ingest.py --list-skipped            # what got skipped, and why
-    python ingest.py --retry-skipped [KEY ...] # re-attempt the gallery fetch
-    python ingest.py --reject-skipped KEY ...  # close one out for good
+    python src/ingest.py --list-skipped            # what got skipped, and why
+    python src/ingest.py --retry-skipped [KEY ...] # re-attempt the gallery fetch
+    python src/ingest.py --reject-skipped KEY ...  # close one out for good
 
 These live here rather than in review.py because a skipped entry has NO
 downloaded file: putting one in the review queue would hand the UI an entry
@@ -350,8 +350,8 @@ def list_skipped(manifest) -> None:
         print(f"      r/{entry.get('subreddit', '')}  {entry.get('permalink', '')}")
     print(
         "\nTo act on one:\n"
-        "  python ingest.py --retry-skipped <KEY>    re-attempt the gallery fetch now\n"
-        "  python ingest.py --reject-skipped <KEY>   close it out (status -> rejected)\n"
+        "  python src/ingest.py --retry-skipped <KEY>    re-attempt the gallery fetch now\n"
+        "  python src/ingest.py --reject-skipped <KEY>   close it out (status -> rejected)\n"
         "A rejected entry keeps its manifest record, so dedup never re-downloads it."
     )
 
@@ -449,7 +449,7 @@ def main():
     feed_url = os.environ.get("REDDIT_SAVED_FEED_URL")
     if not feed_url:
         print(
-            "REDDIT_SAVED_FEED_URL is not set in .env. Copy .env.example to .env, "
+            "REDDIT_SAVED_FEED_URL is not set in .env. Copy examples/.env.example to .env, "
             "then set it to your saved-posts feed URL (old.reddit.com/prefs/feeds).",
             file=sys.stderr,
         )
@@ -525,8 +525,8 @@ def main():
                     if not auth_wall_warned:
                         print(
                             "warning: gallery posts need a logged-in session. Set "
-                            "REDDIT_SESSION_COOKIE in .env (see .env.example), then run "
-                            "`python ingest.py --retry-skipped` to pick these up. "
+                            "REDDIT_SESSION_COOKIE in .env (see examples/.env.example), then run "
+                            "`python src/ingest.py --retry-skipped` to pick these up. "
                             "Single-image posts are unaffected and keep ingesting.",
                             file=sys.stderr,
                         )

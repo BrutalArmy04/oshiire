@@ -49,7 +49,7 @@ from io import StringIO
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "src"))
 
 from review_sandbox import ReviewSandbox  # noqa: E402
 
@@ -80,12 +80,12 @@ LAYOUT = {
 
 
 def _build_sandbox(tmp: Path) -> None:
-    shutil.copy(REPO / "known_series_names.example.txt", tmp / "known_series_names.txt")
+    shutil.copy(REPO / "examples" / "known_series_names.example.txt", tmp / "known_series_names.txt")
     # tagger.subreddit_is_mapped exits the process if this is absent. "TestSub"
     # is deliberately NOT in the example map, so every accept goes through the
     # subreddit panel first -- which is the chained path the second call site
     # lives on.
-    shutil.copy(REPO / "subreddit_map.example.json", tmp / "subreddit_map.json")
+    shutil.copy(REPO / "examples" / "subreddit_map.example.json", tmp / "subreddit_map.json")
     (tmp / "layout.json").write_text(json.dumps(LAYOUT, indent=2), encoding="utf-8")
 
     staging = tmp / "staging"

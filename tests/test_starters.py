@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "src"))
 
 import archive
 import manifest
@@ -107,7 +107,7 @@ class StartersTest(unittest.TestCase):
 
     def test_starter_layout_matches_the_template_shape(self):
         # Every required key the template documents is present, with its default.
-        example = json.loads((REPO / "layout.example.json").read_text(encoding="utf-8"))
+        example = json.loads((REPO / "examples" / "layout.example.json").read_text(encoding="utf-8"))
         self.assertEqual(starters.STARTER_LAYOUT["special_folders"].keys(),
                          example["special_folders"].keys())
         self.assertEqual(starters.STARTER_LAYOUT["group_subfolder"], example["group_subfolder"])

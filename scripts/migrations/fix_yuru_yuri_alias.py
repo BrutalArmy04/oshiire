@@ -26,9 +26,9 @@ import os
 import sys
 from pathlib import Path
 
-# This script lives in scripts/migrations/; the modules it reuses live at the
-# repo root, two levels up.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+# This script lives in scripts/migrations/; the modules it reuses live in the
+# repo root's src/, two levels up.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from manifest import load_manifest
 from shortname import (

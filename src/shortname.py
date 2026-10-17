@@ -29,7 +29,7 @@ SERIES_ALIASES_PATH = Path("data/series_aliases.json")
 def load_layout(path: Path = LAYOUT_PATH) -> dict:
     if not path.exists():
         print(
-            f"{path} not found. Copy layout.example.json to {path} and fill in "
+            f"{path} not found. Copy examples/layout.example.json to {path} and fill in "
             "your archive layout, then retry.",
             file=sys.stderr,
         )

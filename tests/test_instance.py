@@ -17,7 +17,7 @@ import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "src"))
 
 import instance
 import review_sandbox
@@ -72,7 +72,7 @@ class SingleInstanceTest(unittest.TestCase):
         self.lock = self.tmp / "oshiire.lock"
 
     def _probe(self):
-        script = _LOCK_PROBE.format(repo=str(REPO), path=str(self.lock))
+        script = _LOCK_PROBE.format(repo=str(REPO / "src"), path=str(self.lock))
         out = subprocess.run(
             [sys.executable, "-c", script],
             capture_output=True, text=True, timeout=30,
@@ -104,12 +104,12 @@ class ReviewSingleInstanceTest(unittest.TestCase):
     def test_review_exits_1_when_lock_held(self):
         sandbox = Path(tempfile.mkdtemp(prefix="review-lock-"))
         (sandbox / "layout.json").write_text(
-            (REPO / "layout.example.json").read_text(encoding="utf-8"),
+            (REPO / "examples" / "layout.example.json").read_text(encoding="utf-8"),
             encoding="utf-8",
         )
         lock = sandbox / "data" / "oshiire.lock"
         holder = subprocess.Popen(
-            [sys.executable, "-c", _LOCK_HOLDER.format(repo=str(REPO), path=str(lock))],
+            [sys.executable, "-c", _LOCK_HOLDER.format(repo=str(REPO / "src"), path=str(lock))],
             stdout=subprocess.PIPE, text=True,
         )
         try:
@@ -117,7 +117,7 @@ class ReviewSingleInstanceTest(unittest.TestCase):
             # review launch below is guaranteed to find it contended.
             self.assertEqual(holder.stdout.readline().strip(), "LOCKED")
             out = subprocess.run(
-                [sys.executable, str(REPO / "review.py")],
+                [sys.executable, str(REPO / "src" / "review.py")],
                 cwd=str(sandbox), env=review_sandbox.child_environ(),
                 capture_output=True, text=True, timeout=300,
             )
@@ -208,7 +208,7 @@ class PortRecordTest(unittest.TestCase):
         process; this test process reads it back."""
         holder = subprocess.Popen(
             [sys.executable, "-c",
-             _PORT_HOLDER.format(repo=str(REPO), path=str(self.lock), port=7899)],
+             _PORT_HOLDER.format(repo=str(REPO / "src"), path=str(self.lock), port=7899)],
             stdout=subprocess.PIPE, text=True,
         )
         try:

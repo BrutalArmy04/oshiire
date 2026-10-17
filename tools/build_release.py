@@ -16,7 +16,7 @@ Stdlib only. Steps:
      STATIC_FILES and the platform launcher.
   2. The standalone Python is copied to Oshiire/runtime and requirements-lock.txt
      is installed into it with --no-deps --only-binary=:all:; oshiire_release.json
-     (the release marker datahome.py looks for) is written next to app.py.
+     (the release marker datahome.py looks for) is written next to src/.
   3. Everything is precompiled (checked-hash .pyc, so the 2-second timestamps of
      a zip can never make them look stale). pip stays in the runtime.
   4. Checks that fail the build: a personal file anywhere in the app tree, a
@@ -51,6 +51,8 @@ SOURCE_ONLY = ("bchlib", "proxy_tools", "sgmllib3k")
 # run as its own process), and every script jobs.py runs as a pipeline step
 # (found by reading jobs.py's _script("...") calls).
 ENTRY_MODULES = ("app", "setup_window")
+# The app's modules all live flat in this folder (not a package).
+SRC = "src"
 
 # Non-module files a release needs. Globs are matched against repo-relative
 # POSIX paths.
@@ -59,8 +61,8 @@ STATIC_FILES = (
     "data/tombstones.json",
     "*.example*",
     "**/*.example*",
-    ".env.example",
-    "oshiire_unsave.user.js",
+    "examples/.env.example",
+    "assets/oshiire_unsave.user.js",
     "README.md",
     "LICENSE",
     "CHANGELOG.md",
@@ -72,8 +74,8 @@ LAUNCHERS = {"windows": "Oshiire.bat", "linux": "oshiire.sh"}
 ARCHIVE_NAMES = {"windows": "Oshiire-Windows.zip", "linux": "Oshiire-Linux.tar.gz"}
 
 # Never shipped even if an allowlist pattern would match (belt and braces).
-EXCLUDED_PREFIXES = ("tests/", "scripts/", "screenshots/", "tools/", ".github/")
-EXCLUDED_FILES = ("CLAUDE.md", "blueprint.md", "install.bat", "install.sh")
+EXCLUDED_PREFIXES = ("tests/", "scripts/", "docs/screenshots/", "tools/", ".github/")
+EXCLUDED_FILES = ("CLAUDE.md", "docs/blueprint.md", "install.bat", "install.sh")
 EXCLUDED_GLOBS = ("requirements*.txt",)
 
 # Personal data -- the build fails if any of these is in the app tree.
@@ -151,7 +153,7 @@ def _local_imports(path, local):
 
 
 def _job_scripts():
-    tree = ast.parse((REPO / "jobs.py").read_text(encoding="utf-8"))
+    tree = ast.parse((REPO / SRC / "jobs.py").read_text(encoding="utf-8"))
     return {node.args[0].value[:-3] for node in ast.walk(tree)
             if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "_script"
             and node.args and isinstance(node.args[0], ast.Constant)
@@ -159,8 +161,8 @@ def _job_scripts():
 
 
 def import_closure(files):
-    """Root-level modules reachable from ENTRY_MODULES + the job scripts."""
-    local = {f[:-3] for f in files if "/" not in f and f.endswith(".py")}
+    """src/ modules reachable from ENTRY_MODULES + the job scripts."""
+    local = {f[len(SRC) + 1:-3] for f in files if _is_src_module(f)}
     todo = list(ENTRY_MODULES) + sorted(_job_scripts())
     seen = set()
     while todo:
@@ -170,8 +172,12 @@ def import_closure(files):
         if mod not in local:
             raise SystemExit(f"BUILD FAILED: {mod}.py is imported but not in the repo")
         seen.add(mod)
-        todo.extend(_local_imports(REPO / f"{mod}.py", local))
+        todo.extend(_local_imports(REPO / SRC / f"{mod}.py", local))
     return sorted(seen)
+
+
+def _is_src_module(path):
+    return path.startswith(f"{SRC}/") and "/" not in path[len(SRC) + 1:] and path.endswith(".py")
 
 
 def _match(path, patterns):
@@ -180,7 +186,7 @@ def _match(path, patterns):
 
 def select_app_files(platform, files):
     modules = import_closure(files)
-    chosen = {f"{m}.py" for m in modules}
+    chosen = {f"{SRC}/{m}.py" for m in modules}
     for f in files:
         if _match(f, STATIC_FILES):
             chosen.add(f)
@@ -191,8 +197,7 @@ def select_app_files(platform, files):
     missing = sorted(f for f in chosen if f not in files)
     if missing:
         raise SystemExit(f"BUILD FAILED: allowlisted but not in the repo: {missing}")
-    left_out = sorted(f for f in files if f.endswith(".py") and "/" not in f
-                      and f not in chosen)
+    left_out = sorted(f for f in files if _is_src_module(f) and f not in chosen)
     return sorted(chosen), modules, left_out
 
 
@@ -208,7 +213,7 @@ def copy_app(platform, app_dir):
         launcher.chmod(0o755)
     log(f"app files: {len(chosen)} ({len(modules)} modules)")
     log("modules: " + " ".join(modules))
-    log("root .py left out (not imported by the app): " + (" ".join(left_out) or "none"))
+    log("src/ .py left out (not imported by the app): " + (" ".join(left_out) or "none"))
     return chosen
 
 
@@ -251,7 +256,7 @@ def install_packages(py, wheelhouse):
 
 def isolate_runtime(runtime, platform, py):
     """Windows: a <pythonXY>._pth next to python.exe pins sys.path to the runtime
-    and the app folder ("..") and, with no "import site" line, keeps every
+    and the app folder ("..\\src") and, with no "import site" line, keeps every
     per-user site-packages out -- for every process of this python.exe (the
     launcher, a Start-menu shortcut, job children, the setup window). The only
     .pth file in site-packages is setuptools' distutils shim, which nothing
@@ -263,7 +268,7 @@ def isolate_runtime(runtime, platform, py):
                              check=True, capture_output=True, text=True,
                              env=RUNTIME_ENV).stdout.strip()
     pth = runtime / f"python{version}._pth"
-    lines = [f"python{version}.zip", "DLLs", "Lib", "Lib\\site-packages", ".."]
+    lines = [f"python{version}.zip", "DLLs", "Lib", "Lib\\site-packages", "..\\src"]
     pth.write_text("\r\n".join(lines) + "\r\n", encoding="ascii")
     log(f"wrote {pth.name}: " + ", ".join(lines))
     return pth
@@ -285,7 +290,7 @@ def check_no_user_site(py, runtime, top):
 
 
 def app_version():
-    tree = ast.parse((REPO / "version.py").read_text(encoding="utf-8"))
+    tree = ast.parse((REPO / SRC / "version.py").read_text(encoding="utf-8"))
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "__version__"
                                                 for t in node.targets):

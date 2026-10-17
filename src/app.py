@@ -2,7 +2,7 @@
 
 Opens the Gradio review UI inside a native OS window (pywebview). The window is
 just a chrome around the local Gradio server -- review.py still does all the
-work, and `python review.py` still runs the UI in the browser exactly as before.
+work, and `python src/review.py` still runs the UI in the browser exactly as before.
 
 Launch paths, in order of preference:
   1. native window  -- pywebview is installed AND a GUI backend exists
@@ -43,8 +43,7 @@ from instance import (
 
 # This file, resolved once. Used to verify that a PID we are about to terminate
 # really runs THIS repo's app.py -- we never stop a process by image name alone.
-REPO_ROOT = Path(__file__).resolve().parent
-APP_PY = (REPO_ROOT / "app.py").resolve()
+APP_PY = (datahome.CODE_DIR / "app.py").resolve()
 
 # Second-launch port poll: a quiet quick poll first, then up to the full timeout
 # behind a "Starting…" window. Ports to probe when none was recorded (the
@@ -149,7 +148,7 @@ def _setup_stdio(log_dir=Path("data")):
     """Under pythonw.exe there is no console, so sys.stdout/sys.stderr are None
     and any print() (or a child's inherited stream) would raise. Redirect both
     to data/oshiire.log, rotating the previous run's log to data/oshiire.prev.log
-    first. When a console exists (normal `python app.py`), change nothing."""
+    first. When a console exists (normal `python src/app.py`), change nothing."""
     if sys.stdout is not None and sys.stderr is not None:
         return
     log_dir = Path(log_dir)
@@ -172,7 +171,7 @@ def _setup_stdio(log_dir=Path("data")):
 # Single instance
 # --------------------------------------------------------------------------- #
 # acquire_single_instance now lives in instance.py (imported at the top) so that
-# `python review.py` can take the same lock without importing this module.
+# `python src/review.py` can take the same lock without importing this module.
 
 
 # --------------------------------------------------------------------------- #
@@ -365,7 +364,7 @@ def _cmdline_runs_our_app(cmdline, cwd=None):
                 if p.resolve() == APP_PY:
                     return True
                 continue
-            base = Path(cwd) if cwd else REPO_ROOT
+            base = Path(cwd) if cwd else datahome.APP_DIR
             if (base / p).resolve() == APP_PY:
                 return True
         except OSError:

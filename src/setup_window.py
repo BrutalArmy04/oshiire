@@ -5,7 +5,7 @@ Two modes:
               before the UI starts. Offers Save / Skip for now / Cancel and two
               extras: a Start-menu (or app-menu) entry and a one-time download
               of the AI tagging model.
-  "change" -- `python setup_window.py --change`, spawned from Settings -> App.
+  "change" -- `python src/setup_window.py --change`, spawned from Settings -> App.
               Its cwd is the data root (the parent passes it); it loads config
               itself. Save / Cancel only, no extras.
 
@@ -303,7 +303,7 @@ def build_windows_shortcut(app_dir=None, executable=None, environ=None):
     app_dir = Path(app_dir or datahome.APP_DIR)
     lnk = windows_shortcut_path(environ)
     target = gui_python(executable)
-    arguments = f'"{app_dir / "app.py"}"'
+    arguments = f'"{app_dir / "src" / "app.py"}"'
     icon = _app_icon(app_dir, (".ico",))
     lines = [
         f"$s = (New-Object -ComObject WScript.Shell).CreateShortcut({_ps_quote(lnk)})",
@@ -961,7 +961,7 @@ def download_model_in_child(executable=None, runner=None):
     process so the heavy imgutils/onnxruntime import never lands in the app's own
     process. The child is not killed if the app quits mid-download."""
     runner = runner or subprocess.run
-    argv = [str(executable or sys.executable), str(datahome.APP_DIR / "setup_window.py"),
+    argv = [str(executable or sys.executable), str(datahome.CODE_DIR / "setup_window.py"),
             "--download-model"]
     try:
         done = runner(argv, cwd=str(Path.cwd()), stdin=subprocess.DEVNULL,

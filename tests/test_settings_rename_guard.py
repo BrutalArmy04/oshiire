@@ -27,7 +27,7 @@ from io import StringIO
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "src"))
 
 from review_sandbox import ReviewSandbox  # noqa: E402
 
@@ -62,7 +62,7 @@ def _build_panel_sandbox(tmp: Path) -> None:
     (tmp / "data" / "series_aliases.json").write_text(
         json.dumps(SERIES_ALIASES, indent=2), encoding="utf-8"
     )
-    shutil.copy(REPO / "subreddit_map.example.json", tmp / "subreddit_map.json")
+    shutil.copy(REPO / "examples" / "subreddit_map.example.json", tmp / "subreddit_map.json")
     (tmp / "staging").mkdir()
     (tmp / "manifest.json").write_text("{}", encoding="utf-8")
 
@@ -259,7 +259,7 @@ class SettingsRenameGuardTest(unittest.TestCase):
         Path("layout.json").write_text(json.dumps(PANEL_LAYOUT, indent=2), encoding="utf-8")
         Path("data/series_aliases.json").write_text(json.dumps(SERIES_ALIASES, indent=2), encoding="utf-8")
         Path("known_series_names.txt").write_text(SHORTNAME_TEXT, encoding="utf-8")
-        shutil.copy(REPO / "subreddit_map.example.json", Path("subreddit_map.json"))
+        shutil.copy(REPO / "examples" / "subreddit_map.example.json", Path("subreddit_map.json"))
 
         review.layout.clear()
         review.layout.update(copy.deepcopy(PANEL_LAYOUT))

@@ -790,7 +790,7 @@ indexed_paths = {rel_path for rel_path, _ in archive_hashes}
 if not archive_hashes:
     print(
         "  note: no archive pHash index found — duplicate checks will only cover "
-        "staging. Run `python hash_index.py build` to include the archive."
+        "staging. Run `python src/hash_index.py build` to include the archive."
     )
 else:
     print(f"  archive index: {len(archive_hashes):,} image(s) available for comparison.")
@@ -805,7 +805,7 @@ else:
         print(
             f"  note: {_unindexed:,} archived entr(ies) aren't in the index yet; "
             "they'll be compared from their cached hash. Archive apply refreshes "
-            "this automatically (or run `python hash_index.py build`)."
+            "this automatically (or run `python src/hash_index.py build`)."
         )
 # Consulted so a franchise tagged with a known variant name resolves to its
 # existing series instead of proposing a duplicate code. Learning new SERIES
@@ -1442,12 +1442,12 @@ def _toggle_help(open_now):
 # --------------------------------------------------------------------------- #
 # Launch mode (browser vs native) and the Quit control.
 #
-# The running mode is decided by app.py (or `python review.py`, which is always
+# The running mode is decided by app.py (or `python src/review.py`, which is always
 # browser) and pushed in via set_launch_mode BEFORE the first paint. It only
 # affects the Home Quit button: in a native window the OS close button quits, so
 # Quit is hidden; in a browser tab there is no window to close, so Quit is how
 # you stop the server. Default "browser" -- the setting's default and what the
-# plain `python review.py` entry is.
+# plain `python src/review.py` entry is.
 # --------------------------------------------------------------------------- #
 _launch_mode = "browser"
 
@@ -2133,7 +2133,7 @@ def _saved_page_url(user):
     return _REDDIT_SAVED_URL.format(user=user or "me")
 
 
-_USERSCRIPT_PATH = str(Path(__file__).resolve().parent / "oshiire_unsave.user.js")
+_USERSCRIPT_PATH = str(datahome.APP_DIR / "assets" / "oshiire_unsave.user.js")
 _USERSCRIPT_NAME = Path(_USERSCRIPT_PATH).name
 
 
@@ -2143,8 +2143,7 @@ def _static_paths():
     browser's userscript extension at its absolute /gradio_api/file= URL
     (_gradio_file_url).
     Nothing else in the repo is exposed."""
-    root = Path(__file__).resolve().parent
-    return [str(root / "assets" / "fonts"), _USERSCRIPT_PATH]
+    return [str(_FONTS_DIR), _USERSCRIPT_PATH]
 
 
 def _blocked_paths():
@@ -2239,7 +2238,7 @@ def _open_change_setup(popen=None):
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
     try:
         _setup_proc = popen(
-            [jobs._child_python(), str(datahome.APP_DIR / "setup_window.py"), "--change"],
+            [jobs._child_python(), str(datahome.CODE_DIR / "setup_window.py"), "--change"],
             **kwargs)
     except OSError as exc:
         return f"Couldn't open the setup window ({type(exc).__name__})."
@@ -3620,7 +3619,7 @@ def on_sync_apply():
         # NOTHING, so this hint is not optional decoration.
         parts.append("")
         parts.append("⚠️ Some rows were not in the index. Run "
-                     "`python hash_index.py build` to fully resync it.")
+                     "`python src/hash_index.py build` to fully resync it.")
 
     status = ("✅ Manifest written. No file was moved, copied or deleted. "
               "Scan again to see the archive's new state.")
@@ -5777,7 +5776,7 @@ startup_timing.mark("Blocks build")
 def launch_app(inbrowser=True, block=True) -> str:
     """Start the Gradio server and return its local URL.
 
-    `block=True` (the default, and what `python review.py` uses) runs the server
+    `block=True` (the default, and what `python src/review.py` uses) runs the server
     in the foreground until interrupted; `block=False` returns immediately once
     the server is up so a host (app.py's native window) can load the URL itself.
     """

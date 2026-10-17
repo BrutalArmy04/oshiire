@@ -1,6 +1,6 @@
 """Slice 4: run the WD14 AI fallback tagger over manifest.json for entries
 the fast metadata path (tag.py) left unresolved. NOT wired into ingest.py --
-must be invoked explicitly:  python ai_tag.py [--force]
+must be invoked explicitly:  python src/ai_tag.py [--force]
 """
 import argparse
 from pathlib import Path

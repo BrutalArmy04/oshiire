@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "src"))
 
 import fsutil
 
@@ -127,12 +127,14 @@ class HeldOpenOnWindowsTest(unittest.TestCase):
 
 
 class NoBareReplaceInAppCodeTest(unittest.TestCase):
-    """Every atomic write goes through fsutil.replace: no root-level app module
+    """Every atomic write goes through fsutil.replace: no src/ app module
     calls os.replace itself (fsutil is the one place it is allowed)."""
 
     def test_no_os_replace_outside_fsutil(self):
         offenders = []
-        for path in sorted(REPO.glob("*.py")):
+        modules = sorted((REPO / "src").glob("*.py"))
+        self.assertTrue(modules, "found no src/*.py -- the guard would check nothing")
+        for path in modules:
             if path.name == "fsutil.py":
                 continue
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))

@@ -31,7 +31,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "src"))
 
 import archive  # noqa: E402
 import manifest as manifest_mod  # noqa: E402
@@ -83,14 +83,14 @@ def build_scratch_archive(tmp: Path, layout: dict, entries: dict) -> Path:
 class ExampleConfigTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.layout = shortname.load_layout(REPO / "layout.example.json")
-        cls.manifest = manifest_mod.load_manifest(REPO / "manifest.example.json")
+        cls.layout = shortname.load_layout(REPO / "examples" / "layout.example.json")
+        cls.manifest = manifest_mod.load_manifest(REPO / "examples" / "manifest.example.json")
 
         # The shortname file is referenced by name from layout.json; point at the
         # committed example instead of whatever the developer's real one is.
         layout_for_shortnames = dict(cls.layout)
         layout_for_shortnames["shortname_file"] = str(
-            REPO / "known_series_names.example.txt")
+            REPO / "examples" / "known_series_names.example.txt")
         cls.shortname_entries = shortname.load_shortname_map(layout_for_shortnames)
         cls.series_aliases = shortname.load_series_aliases(
             REPO / "data" / "series_aliases.example.json")

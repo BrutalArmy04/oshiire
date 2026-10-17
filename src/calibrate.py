@@ -12,8 +12,8 @@ between the Reddit copy and its nearest archived original. The resulting
 distribution is what sets the dedup thresholds for the bulk backfill.
 
 Two subcommands:
-    python calibrate.py run [--count 200] [--start-date 2023-05-01] [--keep] ...
-    python calibrate.py ground-truth --folder <dir of known May-2023 files>
+    python src/calibrate.py run [--count 200] [--start-date 2023-05-01] [--keep] ...
+    python src/calibrate.py ground-truth --folder <dir of known May-2023 files>
 
 Fetch approach mirrors ingest.py's gallery fetching: Reddit's `.json`/API
 endpoints 403 for this project's User-Agent, but the plain
@@ -336,7 +336,7 @@ def cmd_run(args) -> None:
     start_date = datetime.strptime(args.start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     db_path = args.db
     if not db_path.exists():
-        print(f"No index at {db_path}. Run `python hash_index.py build` first.", file=sys.stderr)
+        print(f"No index at {db_path}. Run `python src/hash_index.py build` first.", file=sys.stderr)
         sys.exit(1)
 
     out_dir = args.out

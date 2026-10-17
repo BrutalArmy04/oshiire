@@ -1,7 +1,7 @@
 """Read-only history browser: recently processed manifest entries, newest
 first, so a past decision can be looked up. It is a PAGE inside the app now
 (review.py imports build_ui and embeds it), and also still runs standalone via
-`python history.py`.
+`python src/history.py`.
 
 Strictly a VIEWER. It never writes the manifest, never moves or deletes a
 file, and offers no edit controls -- reverting the most recent action is

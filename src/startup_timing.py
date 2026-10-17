@@ -3,7 +3,7 @@
 Each mark() records a startup phase and prints one line to stdout -- which, under
 pythonw (the desktop launch), app.py has redirected to data/oshiire.log, so the
 breakdown lands in the log where a slow start can be diagnosed after the fact. On
-a console (`python review.py`) it just prints there.
+a console (`python src/review.py`) it just prints there.
 
 Pure stdlib, no gradio: it is imported FIRST in review.py so the clock (_t0)
 starts before the heavy imports it measures. Instrumentation only -- a logging

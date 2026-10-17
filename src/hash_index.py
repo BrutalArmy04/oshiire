@@ -15,8 +15,8 @@ ARCHIVE_DIR. Its only output is the index file (default `data/archive_index.db`)
 which lives under the project dir, never inside ARCHIVE_DIR, and is gitignored.
 
 Usage:
-    python hash_index.py build [--hash-size 8] [--db data/archive_index.db]
-    python hash_index.py lookup <image_path> [-n 5] [--db data/archive_index.db]
+    python src/hash_index.py build [--hash-size 8] [--db data/archive_index.db]
+    python src/hash_index.py lookup <image_path> [-n 5] [--db data/archive_index.db]
 """
 import argparse
 import os
@@ -465,7 +465,7 @@ def query_image(
     image."""
     if not db_path.exists():
         raise FileNotFoundError(
-            f"No index at {db_path}. Run `python hash_index.py build` first."
+            f"No index at {db_path}. Run `python src/hash_index.py build` first."
         )
     _configure_pillow()
     conn = sqlite3.connect(db_path)

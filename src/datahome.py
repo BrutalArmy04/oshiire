@@ -17,7 +17,8 @@ import os
 import sys
 from pathlib import Path
 
-APP_DIR = Path(__file__).resolve().parent
+CODE_DIR = Path(__file__).resolve().parent
+APP_DIR = CODE_DIR.parent
 
 # Written by the release build, never by the app and never present in a git
 # checkout. Its presence is what makes a downloaded copy keep its data per user.

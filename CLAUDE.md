@@ -53,19 +53,26 @@ Human-in-the-loop: nothing reaches the final archive without explicit approval.
 
 ## App & UI architecture (the home-menu arc)
 The pipeline is one app, driven from a home menu — the numbered launcher scripts
-are gone. Modules:
+are gone. Code layout: every app module lives flat in `src/` (not a package;
+imports work because the running script's folder is on `sys.path`, and in a
+Windows release because the runtime's `._pth` lists `..\src`). The launchers,
+`assets/`, `data/`, `examples/` (the `*.example.*` config templates and
+`.env.example`) and the docs stay at the repo root. `datahome.APP_DIR` is that
+root; `datahome.CODE_DIR` is `src/`. Run CLI scripts from the root
+(`python src/x.py`), never from inside `src/`: they resolve the manifest and
+configs against the cwd. Modules:
 - `app.py` — the desktop entry point. Reads `settings.window_mode()`, takes the
   single-instance lock, then opens in the browser (default) or a native pywebview
   window. Falls back to the browser if pywebview/WebView2 can't start. A second
   launch opens a tab at the running port (browser) or says it's already open
   (window). Browser mode has a "Quit Oshiire" header button; window mode hides
-  it (closing the window quits). `Oshiire.bat`/`oshiire.sh` just launch `app.py`.
+  it (closing the window quits). `Oshiire.bat`/`oshiire.sh` just launch `src/app.py`.
 - `review.py` — **the whole UI** (one `gr.Blocks`): Home menu, Review, the job
   pages (Ingest / Backfill / Preview filing [archive dry run] / File images
   [archive apply]), Manage (Character Folders, Sync, Settings with five config
   editors + the App tab), and History and Resolve built in-place from
   `history.py` / `resolve.py`. `launch_app()` builds the themed URL and records
-  the bound port. Also runnable standalone (`python review.py`, browser).
+  the bound port. Also runnable standalone (`python src/review.py`, browser).
 - `jobs.py` — runs the pipeline CLIs (ingest/backfill/archive/…) as child
   processes and streams redacted output to the job pages. No gradio import. The
   single-job lock lives here; the menu greys out while a job runs.
@@ -99,14 +106,15 @@ are gone. Modules:
   `tools/smoke_release.py`; `.github/workflows/release.yml` runs both on
   Windows and Linux. Stdlib only, both of them.
 - **The marker file** `oshiire_release.json` (written by the build next to
-  `app.py`, never present in a checkout) is what makes a copy a release:
+  `src/`, never present in a checkout) is what makes a copy a release:
   `datahome.is_release()`.
 - **The data root** (`datahome.data_root()`, and it is the cwd — `app.py`
   chdirs there): `OSHIIRE_HOME` if set; else in a release the per-user folder
   (`%LOCALAPPDATA%\Oshiire`, `~/.local/share/oshiire` or
   `$XDG_DATA_HOME/oshiire`, `~/Library/Application Support/Oshiire`); else, in
-  a checkout, the app folder. App files (scripts, fonts, the userscript,
-  `data/tombstones.json`) are anchored to `datahome.APP_DIR`, never the cwd.
+  a checkout, the app folder. App files (fonts, the userscript,
+  `data/tombstones.json`) are anchored to `datahome.APP_DIR`, the scripts to
+  `datahome.CODE_DIR`, never the cwd.
 - `requirements-lock.txt` is the exact package set a release installs
   (`--no-deps --only-binary=:all:`). Regenerate it from a working `.venv-win`
   with `python -m pip freeze --all`, then drop pip and the dev-only chain
@@ -117,12 +125,12 @@ are gone. Modules:
   Linux, so the Linux release runs on glibc 2.28 and newer).
 - **User-site isolation:** the runtime must never import from a per-user
   site-packages. Windows: a `python314._pth` next to `python.exe` pins
-  `sys.path` to the runtime and the app folder. Linux: `oshiire.sh` exports
+  `sys.path` to the runtime and `src/` (`..\src`). Linux: `oshiire.sh` exports
   `PYTHONNOUSERSITE=1`. Every build-time call uses `-s` + `PYTHONNOUSERSITE`.
 - **The asset names are fixed:** `Oshiire-Windows.zip` and
   `Oshiire-Linux.tar.gz` (`ARCHIVE_NAMES`); the README's download buttons link
   `/releases/latest/download/<name>`, and a test checks both.
-- To release: bump `version.py`, add a dated `## [X.Y.Z] - YYYY-MM-DD`
+- To release: bump `src/version.py`, add a dated `## [X.Y.Z] - YYYY-MM-DD`
   CHANGELOG section (the release notes are cut from it), commit, push a
   `vX.Y.Z` tag. A manual run of the workflow is a dry run.
 
@@ -150,12 +158,12 @@ are gone. Modules:
   `pkill -f python`, etc.).** This machine runs other Python; a name-based kill
   takes them down too. The single-instance lock (`data/oshiire.lock`) records
   `port pid`, so the live app's PID is known — but verify the PID's command line
-  runs this repo's `app.py` before terminating it.
+  runs this repo's `src/app.py` before terminating it.
 - The Preview filing result is a plain **HTML** table, not `gr.Dataframe`:
   `gr.Dataframe` froze the UI for minutes at ~1000 rows, so the plan table is
   rendered as HTML (`archive_dryrun_plan_table`/`_plan_wrap`) instead.
 - The **Free up saved space** page serves exactly one extra file over
-  `gr.set_static_paths`: `oshiire_unsave.user.js` (plus the bundled fonts).
+  `gr.set_static_paths`: `assets/oshiire_unsave.user.js` (plus the bundled fonts).
   Nothing else in the repo is exposed — see `_static_paths()` in `review.py`.
 
 ## Security rules (do not violate)
@@ -182,7 +190,7 @@ are gone. Modules:
 - `.env`, `staging/`, `archive/`, and `manifest.json` are gitignored and must
   stay that way. If you add a new file holding secrets or account-derived data,
   add it to `.gitignore` in the same change.
-- Ship a `.env.example` with an empty `REDDIT_SAVED_FEED_URL=` and an empty
+- Ship an `examples/.env.example` with an empty `REDDIT_SAVED_FEED_URL=` and an empty
   `REDDIT_SESSION_COOKIE=`, never a filled one.
 ## Architectural invariants
 - **`manifest.json` is the single source of truth.** The downloader and the UI
@@ -441,7 +449,7 @@ reimplemented.
 ### Wallpaper suggestion (review UI)
 Dimensions are shown next to the Wallpaper control ALWAYS, so a borderline
 image can be judged by eye. Thresholds come from `layout.json`'s optional
-`wallpaper_rules` (see `layout.example.json`), merged per-key over defaults in
+`wallpaper_rules` (see `examples/layout.example.json`), merged per-key over defaults in
 `shortname.load_wallpaper_rules`. A suggested target is marked with a ★ in the
 radio label. **Never auto-select** — the suggestion is advisory, the choice is
 the human's. `both` is only ever suggested when the image independently
@@ -541,7 +549,7 @@ Config files:
 - `layout.json` — the user's PERSONAL archive layout. **Gitignored.** Describes
   each franchise's filing style and name aliases. Seeded from the user's real
   folder tree.
-- `layout.example.json` — committed template documenting the format.
+- `examples/layout.example.json` — committed template documenting the format.
 - Shortname file (`000___Known_Series_Names.txt` for this user;
   `known_series_names.txt` generic) — maps SHORTNAME = Full Series Name for the
   `shortname` style. Personal one gitignored; `.example` committed.

@@ -22,6 +22,7 @@ from pathlib import Path
 from queue import Empty, Queue
 
 import config
+import datahome
 
 # Imported for its path/parse helpers only (CSV_PATH, STATE_PATH, load_rows,
 # load_state) -- the single source of truth for the back-catalogue cursor. The
@@ -29,13 +30,10 @@ import config
 import backfill
 from hash_index import DEFAULT_DB
 
-REPO_ROOT = Path(__file__).resolve().parent
-
-
 def _script(name):
-    """A pipeline script's ABSOLUTE path in the app folder. Children run in the
+    """A pipeline script's ABSOLUTE path in the src folder. Children run in the
     data root (the cwd), which is not the app folder in a release."""
-    return str(REPO_ROOT / name)
+    return str(datahome.CODE_DIR / name)
 
 
 # --------------------------------------------------------------------------- #

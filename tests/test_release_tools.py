@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "src"))
 
 import useragent
 import version
@@ -104,13 +104,17 @@ class AppFileSelectionTest(unittest.TestCase):
                        "ai_tagger", "hash_index", "imagemeta", "export_unsave_list",
                        "tombstones", "redditclient"):
             self.assertIn(module, self.modules)
-            self.assertIn(f"{module}.py", self.win)
-        self.assertEqual(self.left_out, ["calibrate.py"])
+            self.assertIn(f"src/{module}.py", self.win)
+        self.assertEqual(self.left_out, ["src/calibrate.py"])
+        # The code ships in src/ only: no module at the release root.
+        self.assertEqual([r for r in self.win + self.linux if r.endswith(".py") and "/" not in r], [])
 
     def test_static_files_and_launchers(self):
-        for rel in ("assets/fonts/OFL.txt", "data/tombstones.json", "layout.example.json",
-                    "data/backfill/state.example.json", ".env.example",
-                    "oshiire_unsave.user.js", "README.md", "LICENSE", "CHANGELOG.md",
+        for rel in ("assets/fonts/OFL.txt", "data/tombstones.json", "examples/layout.example.json",
+                    "examples/manifest.example.json", "examples/subreddit_map.example.json",
+                    "examples/known_series_names.example.txt",
+                    "data/backfill/state.example.json", "examples/.env.example",
+                    "assets/oshiire_unsave.user.js", "README.md", "LICENSE", "CHANGELOG.md",
                     "docs/SETUP.md", "docs/BACKFILL.md"):
             self.assertIn(rel, self.win, rel)
         self.assertIn("Oshiire.bat", self.win)
@@ -120,10 +124,10 @@ class AppFileSelectionTest(unittest.TestCase):
 
     def test_nothing_dev_only_or_personal(self):
         for rel in self.win + self.linux:
-            self.assertFalse(rel.startswith(("tests/", "scripts/", "screenshots/", "tools/",
+            self.assertFalse(rel.startswith(("tests/", "scripts/", "docs/screenshots/", "tools/",
                                              ".github/", "staging/")), rel)
-            self.assertNotIn(rel, ("CLAUDE.md", "blueprint.md", "install.bat", "install.sh",
-                                   "calibrate.py", "manifest.json", "layout.json",
+            self.assertNotIn(rel, ("CLAUDE.md", "docs/blueprint.md", "install.bat", "install.sh",
+                                   "src/calibrate.py", "manifest.json", "layout.json",
                                    "subreddit_map.json", ".env", "docs/PROJECT_CONTEXT.md"))
             self.assertFalse(rel.startswith("requirements"), rel)
         self.assertEqual([r for r in self.win if r.startswith("data/")
@@ -177,7 +181,7 @@ class TreeScanTest(unittest.TestCase):
         self.assertEqual(pth.name, expected)
         lines = pth.read_text(encoding="ascii").splitlines()
         self.assertIn("Lib\\site-packages", lines)
-        self.assertIn("..", lines)  # the app folder
+        self.assertIn("..\\src", lines)  # the app folder
         self.assertNotIn("import site", lines)  # no per-user site-packages
         self.assertIsNone(br.isolate_runtime(runtime, "linux", Path(sys.executable)))
 
@@ -278,7 +282,7 @@ class ChangelogNotesTest(unittest.TestCase):
 
     def test_extracts_this_versions_section(self):
         notes = self._notes(version.__version__, REPO / "CHANGELOG.md")
-        self.assertIn("### Added", notes)
+        self.assertRegex(notes, r"(?m)^### ")
         self.assertNotIn(f"## [{version.__version__}]", notes)
         self.assertNotIn("All notable changes", notes)
 

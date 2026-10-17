@@ -42,7 +42,7 @@ from pathlib import Path
 import gradio as gr
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "src"))
 
 from review_sandbox import ReviewSandbox, build_sandbox, child_environ  # noqa: E402
 
@@ -730,7 +730,7 @@ class RenderContractTest(unittest.TestCase):
     def test_history_never_imports_a_writer(self):
         """History's read-only guarantee is structural: parse history.py's
         imports and assert it pulls in no save_manifest / save_layout / save_*."""
-        source = (REPO / "history.py").read_text(encoding="utf-8")
+        source = (REPO / "src" / "history.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
         imported = set()
         for node in ast.walk(tree):
@@ -749,7 +749,7 @@ class RenderContractTest(unittest.TestCase):
         a SUBPROCESS so it never touches this process's module cache."""
         script = textwrap.dedent(f"""
             import sys
-            sys.path.insert(0, {str(REPO)!r})
+            sys.path.insert(0, {str(REPO / "src")!r})
             import resolve, history
             # __name__ guard held: neither launched a server on import.
             assert callable(resolve.build_ui), "resolve.build_ui missing"
@@ -1280,7 +1280,7 @@ class RenderContractTest(unittest.TestCase):
 
     def test_username_never_comes_from_the_app_folder_env(self):
         """While the sandbox is active, config reads (review._reddit_username ->
-        config.get) see an EMPTY app folder, so a .env next to app.py -- the
+        config.get) see an EMPTY app folder, so a .env next to src/ -- the
         user's real one in a checkout -- can never reach a test."""
         import config
         import datahome
@@ -1347,7 +1347,7 @@ class RenderContractTest(unittest.TestCase):
             review._reddit_username, webbrowser.open = prev_user, prev_open
 
     def test_change_setup_spawns_at_most_one_child(self):
-        """Settings -> App "Change setup...": [child python, APP_DIR/setup_window.py,
+        """Settings -> App "Change setup...": [child python, CODE_DIR/setup_window.py,
         --change] in the data root (cwd), one at a time; a finished child allows
         a new one. Popen is a fake -- no window opens."""
         review = self.review
@@ -1369,7 +1369,7 @@ class RenderContractTest(unittest.TestCase):
         self.assertEqual(len(children), 1)  # the second click reused the open one
         argv, kwargs, child = children[0]
         self.assertEqual(argv, [review.jobs._child_python(),
-                                str(review.datahome.APP_DIR / "setup_window.py"), "--change"])
+                                str(review.datahome.CODE_DIR / "setup_window.py"), "--change"])
         self.assertEqual(Path(kwargs["cwd"]).resolve(), Path(os.getcwd()).resolve())
         # The pre-config environment (config.launch_environ, or os.environ when
         # config was never loaded), so the child sees each setting's true source.
@@ -1404,10 +1404,11 @@ class RenderContractTest(unittest.TestCase):
         self.assertEqual(len(paths), 2)
         self.assertTrue(any(p.endswith("oshiire_unsave.user.js") for p in paths))
         self.assertTrue(any(p.replace("\\", "/").endswith("assets/fonts") for p in paths))
-        root = str(Path(review.__file__).resolve().parent)
-        self.assertNotIn(root, paths)
+        root = review.datahome.APP_DIR
+        for folder in (root, root / "assets", review.datahome.CODE_DIR):
+            self.assertNotIn(str(folder), paths)
         # The served file actually exists (the button hands it to the browser).
-        self.assertTrue((Path(root) / "oshiire_unsave.user.js").exists())
+        self.assertTrue((root / "assets" / "oshiire_unsave.user.js").exists())
 
     def test_export_unsave_stream_reports_the_pluralised_count(self):
         """End to end through _job_stream: the export job's OSHIIRE_UNSAVE line

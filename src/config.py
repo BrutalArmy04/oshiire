@@ -54,7 +54,7 @@ _MIN_SECRET_LEN = 8
 # Set by load(): the data root and app folder it resolved files against, and a
 # snapshot of the process environment taken BEFORE any file values were copied
 # in -- so later reads can still tell a real environment variable from a value
-# load() put there. None until load() runs (e.g. `python review.py`, tests);
+# load() put there. None until load() runs (e.g. `python src/review.py`, tests);
 # then the cwd, APP_DIR and the live os.environ are used.
 _state = None
 
