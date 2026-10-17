@@ -1,0 +1,209 @@
+# Build Oshiire for Windows and Linux, test the built copies, and publish them.
+#
+#   push of a tag v*    -> build + test both platforms, then a GitHub release
+#                          with Oshiire-Windows.zip and Oshiire-Linux.tar.gz
+#   workflow_dispatch   -> DRY RUN: build + test both, upload the archives as
+#                          workflow artifacts, never create a release
+#
+# The asset names are fixed: the README links
+# /releases/latest/download/Oshiire-Windows.zip and .../Oshiire-Linux.tar.gz.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # python-build-standalone, pinned by file name AND sha256 (from the release's
+  # SHA256SUMS). Verified before anything is extracted.
+  PBS_RELEASE: "20260804"
+  WIN_ASSET: cpython-3.14.6+20260804-x86_64-pc-windows-msvc-install_only.tar.gz
+  WIN_SHA256: 06e357ff7e5d1629b53908e412453e527708fa91e6e78f1a98dc0c30b6fef878
+  LINUX_ASSET: cpython-3.14.6+20260804-x86_64-unknown-linux-gnu-install_only.tar.gz
+  LINUX_SHA256: 8fa4614f8c2d47430d5573098fad787c44bb314830fd2e826952335446706e45
+  # Never let a runner's per-user site-packages leak into the runtime or pip.
+  PYTHONNOUSERSITE: "1"
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Tag must match version.py
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          $version = (Select-String -Path version.py -Pattern '^__version__ = "(.+)"').Matches[0].Groups[1].Value
+          if ($env:GITHUB_REF_NAME -ne "v$version") {
+            Write-Output "::error::tag $env:GITHUB_REF_NAME does not match version.py ($version)"
+            exit 1
+          }
+
+      - name: Download and verify the Python runtime
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "runtime.tar.gz"
+          $url = "https://github.com/astral-sh/python-build-standalone/releases/download/$env:PBS_RELEASE/" + ($env:WIN_ASSET -replace '\+', '%2B')
+          Invoke-WebRequest -Uri $url -OutFile $archive -MaximumRetryCount 3
+          $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLower()
+          if ($hash -ne $env:WIN_SHA256) {
+            Write-Output "::error::runtime sha256 mismatch: got $hash"
+            exit 1
+          }
+          $dest = Join-Path $env:RUNNER_TEMP "rt"
+          New-Item -ItemType Directory -Force $dest | Out-Null
+          tar -xzf $archive -C $dest
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & "$dest\python\python.exe" -s -VV
+
+      - name: Build the source-only wheels
+        run: |
+          $py = Join-Path $env:RUNNER_TEMP "rt\python\python.exe"
+          $reqs = Join-Path $env:RUNNER_TEMP "source-only.txt"
+          & $py -s tools/build_release.py --source-only-reqs | Set-Content -Encoding ascii $reqs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & $py -s -m pip wheel --no-cache-dir --disable-pip-version-check --no-deps --no-binary=:all: -w wheelhouse -r $reqs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Get-ChildItem wheelhouse
+
+      - name: Build the release
+        run: |
+          $py = Join-Path $env:RUNNER_TEMP "rt\python\python.exe"
+          & $py -s tools/build_release.py --platform windows --python (Join-Path $env:RUNNER_TEMP "rt\python") --wheelhouse wheelhouse --out out
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Smoke-test the built release
+        run: |
+          & out\Oshiire\runtime\python.exe tools/smoke_release.py --app out\Oshiire
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Unit tests on the built runtime
+        run: |
+          & out\Oshiire\runtime\python.exe -m unittest discover -s tests -v 2>&1 | Tee-Object -FilePath suite.log
+          $code = $LASTEXITCODE
+          Write-Output "--- skipped tests:"
+          Select-String -Path suite.log -Pattern '\.\.\. skipped' | ForEach-Object { $_.Line }
+          exit $code
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Oshiire-Windows
+          path: out/Oshiire-Windows.zip
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Tag must match version.py
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' version.py)
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match version.py ($version)"
+            exit 1
+          fi
+
+      - name: Download and verify the Python runtime
+        run: |
+          archive="$RUNNER_TEMP/runtime.tar.gz"
+          curl -fsSL --retry 3 -o "$archive" \
+            "https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_RELEASE/${LINUX_ASSET//+/%2B}"
+          echo "$LINUX_SHA256  $archive" | sha256sum --check --strict -
+          mkdir -p "$RUNNER_TEMP/rt"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/rt"
+          "$RUNNER_TEMP/rt/python/bin/python3" -s -VV
+
+      - name: Build the source-only wheels (manylinux_2_28)
+        run: |
+          "$RUNNER_TEMP/rt/python/bin/python3" -s tools/build_release.py --source-only-reqs > source-only.txt
+          mkdir -p wheelhouse
+          # Inside the manylinux_2_28 image, with its cp314, then auditwheel
+          # repair: bchlib then needs glibc 2.28 like numpy/onnxruntime do, not
+          # the runner's newer glibc.
+          docker run --rm -v "$PWD:/io" -w /io quay.io/pypa/manylinux_2_28_x86_64 bash -euxc '
+            PY=/opt/python/cp314-cp314/bin/python
+            $PY -m pip wheel --no-cache-dir --disable-pip-version-check --no-deps --no-binary=:all: -w /tmp/raw -r /io/source-only.txt
+            for w in /tmp/raw/*.whl; do
+              case "$w" in
+                *-none-any.whl) cp "$w" /io/wheelhouse/ ;;
+                *) auditwheel repair --plat manylinux_2_28_x86_64 -w /io/wheelhouse "$w" ;;
+              esac
+            done
+            chown -R '"$(id -u):$(id -g)"' /io/wheelhouse'
+          ls -l wheelhouse
+          for w in wheelhouse/*.whl; do
+            name=$(basename "$w")
+            case "$name" in *-none-any.whl) continue ;; esac
+            max=$(grep -oE 'manylinux_2_[0-9]+' <<<"$name" | cut -d_ -f3 | sort -n | tail -1)
+            if [ -z "$max" ] || [ "$max" -gt 28 ]; then
+              echo "::error::$name is not manylinux_2_28 or lower"
+              exit 1
+            fi
+            echo "$name: glibc <= 2.$max"
+          done
+
+      - name: Build the release
+        run: |
+          "$RUNNER_TEMP/rt/python/bin/python3" -s tools/build_release.py --platform linux \
+            --python "$RUNNER_TEMP/rt/python" --wheelhouse wheelhouse --out out
+
+      - name: Smoke-test the built release
+        run: out/Oshiire/runtime/bin/python3 tools/smoke_release.py --app out/Oshiire
+
+      - name: Unit tests on the built runtime
+        run: |
+          set -o pipefail
+          out/Oshiire/runtime/bin/python3 -m unittest discover -s tests -v 2>&1 | tee suite.log
+          echo "--- skipped tests:"
+          grep -E '\.\.\. skipped' suite.log || true
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Oshiire-Linux
+          path: out/Oshiire-Linux.tar.gz
+          if-no-files-found: error
+
+  release:
+    # Tag pushes only: a manual run is a dry run, even when started on a tag.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            /^## \[/ { keep = (index($0, "## [" v "]") == 1); next }
+            keep' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "::error::CHANGELOG.md has no section for $version"
+            exit 1
+          fi
+          cat notes.md
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          ls -l dist
+          gh release create "$GITHUB_REF_NAME" \
+            dist/Oshiire-Windows.zip dist/Oshiire-Linux.tar.gz \
+            --title "Oshiire $version" --notes-file notes.md --verify-tag

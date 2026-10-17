@@ -30,6 +30,7 @@ from starlette.exceptions import StarletteDeprecationWarning
 # Both are stdlib + python-dotenv only.
 import config
 import datahome
+from version import __version__
 
 # Phase B: runs the ingest/backfill/archive CLI pipelines as child processes and
 # streams their output. jobs.py imports no gradio and does no network itself.
@@ -4567,8 +4568,12 @@ with gr.Blocks(title="Oshiire", analytics_enabled=False, delete_cache=(86400, 86
      help_state = gr.State(False)
      with gr.Column(elem_id="home-help", elem_classes=["page-hidden"]) as help_panel:
         help_md = gr.Markdown(HELP_MD)
-        # Where the manifest, staging/ and data/ live (the data root).
-        data_folder_btn = gr.Button("Open data folder", elem_classes=["tool"], size="sm")
+        # Where the manifest, staging/ and data/ live (the data root), and which
+        # Oshiire this is.
+        with gr.Row():
+            data_folder_btn = gr.Button("Open data folder", elem_classes=["tool"],
+                                        size="sm", scale=0)
+            version_md = gr.Markdown(f"Oshiire {__version__}", elem_id="app-version")
         data_folder_md = gr.Markdown("")
 
      with gr.Column(elem_classes=["closet"]):
@@ -5536,8 +5541,8 @@ with gr.Blocks(title="Oshiire", analytics_enabled=False, delete_cache=(86400, 86
        with gr.Tab("App") as app_subtab:
         gr.Markdown(
             "### App\n"
-            "How Oshiire opens. This is the one setting the app writes itself; "
-            "it lives in `data/settings.json`, never in `.env`."
+            "How Oshiire opens. Oshiire writes its own preferences and the setup "
+            "window's settings in its data folder, and never changes your `.env`."
         )
         app_window_radio = gr.Radio(
             choices=[("Your web browser", "browser"), ("Its own window", "native")],

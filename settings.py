@@ -2,12 +2,14 @@
 
 Separate from .env on purpose: .env holds SECRETS and the app must never write
 it. This file holds only non-secret UI preferences the app itself owns and
-rewrites. Today that is a single decision -- how Oshiire opens:
+rewrites:
 
-    {"window": "browser" | "native"}
+    {"window": "browser" | "native",       how Oshiire opens
+     "theme": "system" | "light" | "dark",  its appearance
+     "setup_done": true | false}            the first-run setup window was answered
 
-Anything unreadable, missing or out of range reads back as the safe default,
-"browser" (open in the default web browser). No gradio, no review import, so
+Anything unreadable, missing or out of range reads back as the safe default:
+"browser" (open in the default web browser), "system", and false. No gradio, no review import, so
 both entry points can read the mode without pulling in the heavy UI graph.
 """
 import json

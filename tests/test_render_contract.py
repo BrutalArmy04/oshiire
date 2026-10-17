@@ -1368,6 +1368,10 @@ class RenderContractTest(unittest.TestCase):
         review._open_change_setup(popen=fake_popen)
         self.assertEqual(len(children), 2)
 
+    def test_help_panel_shows_the_version(self):
+        import version
+        self.assertEqual(self.review.version_md.value, f"Oshiire {version.__version__}")
+
     def test_open_data_folder_opens_the_cwd(self):
         review = self.review
         opened = []

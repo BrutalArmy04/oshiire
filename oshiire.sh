@@ -6,6 +6,9 @@ DIR="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")")" && 
 cd "$DIR" || exit 1
 if [ -x "$DIR/runtime/bin/python3" ]; then
     PY="$DIR/runtime/bin/python3"
+    # The bundled Python must never pick up packages from a per-user
+    # site-packages (~/.local/lib/python3.14); every job child inherits this.
+    export PYTHONNOUSERSITE=1
 else
     PY="$DIR/.venv/bin/python"
 fi

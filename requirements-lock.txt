@@ -1,0 +1,126 @@
+# requirements-lock.txt -- the exact package set a release of Oshiire ships.
+#
+# What: every package requirements.txt pulls in, pinned to the versions the
+# app is developed and tested with (Python 3.14, Windows). Platform markers
+# come from each package's own Requires-Dist (pythonnet/clr_loader are the
+# Windows pywebview backend; colorama is Windows-only for click/tqdm/typer).
+#
+# How it was produced: `pip freeze --all` of the development venv (.venv-win),
+# minus pip and the dev-only chain from requirements-dev.txt (playwright, pyee,
+# greenlet, fonttools), plus those markers. tools/build_release.py installs it.
+#
+# Install with --no-deps. That is deliberate: dghs-imgutils still declares
+# numpy<2, which has no wheel for Python 3.13+ (pip would build an experimental
+# MinGW numpy that crashes on import -- see install.bat). numpy 2.x is pinned
+# below and works with it. With --no-deps the pin is simply not consulted.
+#
+# Three packages have no Python 3.14 wheel and are built from source by the
+# release workflow (SOURCE_ONLY in tools/build_release.py): bchlib,
+# proxy_tools, sgmllib3k. Everything else installs --only-binary=:all:.
+#
+# Regenerate: in a venv where `pip install -r requirements.txt` followed by
+# `pip install --upgrade numpy` works and the tests pass, run
+#     python -m pip freeze --all
+# then drop pip, playwright, pyee, greenlet and fonttools, and re-add the three
+# markers above (re-check them by walking the Requires-Dist closure).
+annotated-doc==0.0.4
+annotated-types==0.7.0
+anyio==4.14.1
+audioop-lts==0.2.2
+bchlib==2.1.3
+bitmath==2.1.1
+bottle==0.13.4
+bracex==3.0
+brotli==1.2.0
+cachetools==7.1.4
+certifi==2026.6.17
+cffi==2.1.1
+chardet==4.0.0
+charset-normalizer==3.4.7
+click==8.4.2
+clr_loader==0.3.1; sys_platform == "win32"
+colorama==0.4.6; platform_system == "Windows"
+curl_cffi==0.16.2
+deprecation==2.1.0
+dghs-imgutils==0.19.0
+emoji==2.11.1
+fastapi==0.139.0
+feedparser==6.0.12
+filelock==3.29.5
+flatbuffers==25.12.19
+fsspec==2026.6.0
+gradio==6.19.0
+gradio_client==2.5.0
+groovy==0.1.2
+h11==0.16.0
+hbutils==0.14.2
+hf-gradio==0.4.1
+hf-xet==1.5.1
+hfutils==0.13.0
+httpcore==1.0.9
+httpx==0.28.1
+huggingface_hub==1.22.0
+idna==3.18
+ImageHash==4.3.2
+Jinja2==3.1.6
+joblib==1.5.3
+markdown-it-py==4.2.0
+MarkupSafe==3.0.3
+mdurl==0.1.2
+narwhals==2.23.0
+natsort==8.4.0
+numpy==2.5.4
+onnxruntime==1.27.0
+opencv-contrib-python==4.11.0.86
+orjson==3.11.9
+packaging==26.2
+pandas==2.3.3
+piexif==1.1.3
+pillow==12.3.0
+pilmoji==2.0.5
+protobuf==7.35.1
+proxy_tools==0.1.0
+psutil==7.2.2
+pyclipper==1.4.0
+pycparser==3.0
+pydantic==2.13.4
+pydantic_core==2.46.4
+pydub==0.25.1
+Pygments==2.20.0
+pyparsing==3.0.9
+pyrfc6266==1.0.2
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.2
+python-multipart==0.0.32
+pythonnet==3.2.0; sys_platform == "win32"
+pytimeparse==1.1.8
+pytz==2026.2
+PyWavelets==1.9.0
+pywebview==6.2.1
+PyYAML==6.0.3
+random-user-agent==1.0.1
+requests==2.34.2
+rich==15.0.0
+safehttpx==0.1.7
+scikit-learn==1.9.0
+scipy==1.17.1
+semantic-version==2.10.0
+setuptools==83.0.0
+sgmllib3k==1.0.0
+shapely==2.1.2
+shellingham==1.5.4
+six==1.17.0
+starlette==1.3.1
+threadpoolctl==3.6.0
+tokenizers==0.23.1
+tomlkit==0.14.0
+tqdm==4.68.3
+typer==0.26.8
+typing-inspection==0.4.2
+typing_extensions==4.16.0
+tzdata==2026.2
+tzlocal==5.4.4
+urllib3==2.7.0
+URLObject==3.0.0
+uvicorn==0.49.0
+wcmatch==10.2.1

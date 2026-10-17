@@ -986,7 +986,8 @@ def _show_error_window(reason, fix=None, log_path=_LOG_PATH, fix_is_command=True
     """Pop up a visible, blocking error dialog so a startup failure is never
     silent -- including under pythonw, where there is no console. Uses stdlib
     tkinter only (no extra dependency, always importable), and never raises: if
-    even tkinter is unavailable it falls back to printing. `reason` is the
+    even tkinter is unavailable it falls back to a Windows message box, then to
+    printing. `reason` is the
     one-line cause; `fix` an exact command the user can run to repair it."""
     parts = ["Oshiire couldn't start.", "", reason]
     if fix and fix_is_command:

@@ -395,7 +395,7 @@ def run_steps(steps, cancel, cancellable):
 def _backfill_at_data_root():
     """Point backfill's relative CSV/STATE paths at the data root (the cwd) so its own
     load_rows/load_state (the single source of truth for the cursor) read the
-    right files even when cwd != REPO_ROOT."""
+    right files."""
     old_csv, old_state = backfill.CSV_PATH, backfill.STATE_PATH
     backfill.CSV_PATH = Path.cwd() / old_csv  # the data root
     backfill.STATE_PATH = Path.cwd() / old_state

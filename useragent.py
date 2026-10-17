@@ -22,8 +22,10 @@ constant.
 """
 import os
 
+from version import __version__
+
 # Bumped together with the project, not per-caller.
-VERSION = "v0.1"
+VERSION = f"v{__version__}"
 
 DEFAULT_PRODUCT = "oshiire"
 DESCRIPTION = "personal saved-feed archiver"
