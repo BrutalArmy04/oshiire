@@ -20,6 +20,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+import fsutil
+
 LAYOUT_PATH = Path("layout.json")
 SERIES_ALIASES_PATH = Path("data/series_aliases.json")
 
@@ -47,7 +49,7 @@ def save_layout(layout: dict, path: Path = LAYOUT_PATH) -> None:
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     with tmp_path.open("w", encoding="utf-8", newline="") as f:
         json.dump(layout, f, indent=2, ensure_ascii=False)
-    os.replace(tmp_path, path)
+    fsutil.replace(tmp_path, path)
 
 
 def load_series_aliases(path: Path = SERIES_ALIASES_PATH) -> dict:
@@ -93,7 +95,7 @@ def save_series_aliases(aliases: dict, path: Path = SERIES_ALIASES_PATH) -> None
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     with tmp_path.open("w", encoding="utf-8", newline="") as f:
         json.dump(data, f, indent=2, ensure_ascii=False, sort_keys=True)
-    os.replace(tmp_path, path)
+    fsutil.replace(tmp_path, path)
 
 
 def canonicalize_series(name: str, aliases: Optional[dict]) -> str:
@@ -1185,7 +1187,7 @@ def save_shortname_entry(shortname_path: Path, code: str, full_name: str) -> Non
 
     tmp_path = shortname_path.with_suffix(shortname_path.suffix + ".tmp")
     tmp_path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="")
-    os.replace(tmp_path, shortname_path)
+    fsutil.replace(tmp_path, shortname_path)
 
 
 def remove_shortname_entry(shortname_path: Path, full_name: str) -> None:
@@ -1227,7 +1229,7 @@ def remove_shortname_entry(shortname_path: Path, full_name: str) -> None:
 
     tmp_path = shortname_path.with_suffix(shortname_path.suffix + ".tmp")
     tmp_path.write_text("\n".join(survivors) + "\n", encoding="utf-8", newline="")
-    os.replace(tmp_path, shortname_path)
+    fsutil.replace(tmp_path, shortname_path)
 
 
 def undo_shortname_write(path: Path, existed_before: bool, snapshot: Optional[str]) -> None:
@@ -1241,6 +1243,6 @@ def undo_shortname_write(path: Path, existed_before: bool, snapshot: Optional[st
     if existed_before:
         tmp_path = path.with_suffix(path.suffix + ".tmp")
         tmp_path.write_text(snapshot, encoding="utf-8", newline="")
-        os.replace(tmp_path, path)
+        fsutil.replace(tmp_path, path)
     elif path.exists():
         path.unlink()

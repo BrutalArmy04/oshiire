@@ -1278,6 +1278,23 @@ class RenderContractTest(unittest.TestCase):
         self.assertTrue(res.seal)          # 済 on success
         self.assertIsNone(res.next_label)  # no next-step button
 
+    def test_username_never_comes_from_the_app_folder_env(self):
+        """While the sandbox is active, config reads (review._reddit_username ->
+        config.get) see an EMPTY app folder, so a .env next to app.py -- the
+        user's real one in a checkout -- can never reach a test."""
+        import config
+        import datahome
+        canary = Path(tempfile.mkdtemp(prefix="oshiire-canary-app-"))
+        try:
+            (canary / ".env").write_text("REDDIT_USERNAME=leak-canary\n", encoding="utf-8")
+            with mock.patch.object(datahome, "APP_DIR", canary):
+                self.assertEqual(self.review._reddit_username(), "")
+                files = [p for _, p in config.source_files()]
+                self.assertNotIn(canary / ".env", files)
+                self.assertNotIn(REPO / ".env", files)
+        finally:
+            shutil.rmtree(canary, ignore_errors=True)
+
     def test_saved_page_url(self):
         review = self.review
         # No username -> the /user/me/saved form (old.reddit resolves "me").

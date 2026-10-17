@@ -225,5 +225,74 @@ class WorkflowTest(unittest.TestCase):
             self.assertRegex(ref, r"^actions/[a-z-]+@v\d+$")
 
 
+RELEASE_DOWNLOAD = "https://github.com/BrutalArmy04/oshiire/releases/latest/download/"
+
+
+class ReadmeTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.text = (REPO / "README.md").read_text(encoding="utf-8")
+
+    def test_download_buttons_point_at_the_fixed_asset_names(self):
+        for platform, name in br.ARCHIVE_NAMES.items():
+            url = RELEASE_DOWNLOAD + name
+            with self.subTest(platform=platform):
+                self.assertIn(url, self.text)
+                # A shields.io badge that links to it.
+                self.assertRegex(self.text, rf"\[!\[[^\]]+\]\(https://img\.shields\.io/badge/"
+                                            rf"[^)]+\)\]\({re.escape(url)}\)")
+        self.assertIn(RELEASE_DOWNLOAD + "Oshiire-Windows.zip", self.text)
+        self.assertIn(RELEASE_DOWNLOAD + "Oshiire-Linux.tar.gz", self.text)
+
+    def test_every_relative_link_and_anchor_resolves(self):
+        sys.path.insert(0, str(REPO / "tests"))
+        from doc_links import broken_relative_links
+        for doc in ("README.md", "docs/SETUP.md", "docs/BACKFILL.md", "CHANGELOG.md"):
+            with self.subTest(doc=doc):
+                self.assertEqual(broken_relative_links(REPO / doc), [])
+
+
+class ChangelogNotesTest(unittest.TestCase):
+    """The release job's awk program, run as-is on the changelog."""
+
+    @classmethod
+    def setUpClass(cls):
+        workflow = (REPO / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        match = re.search(r"awk -v v=\"\$version\" '(.*?)' CHANGELOG\.md", workflow, re.S)
+        assert match, "release.yml no longer extracts notes with awk"
+        cls.program = match.group(1)
+        cls.awk = shutil.which("awk")
+
+    def _notes(self, version, path):
+        if not self.awk:
+            self.skipTest("no awk on PATH (the release job runs on ubuntu-latest)")
+        import subprocess
+        done = subprocess.run([self.awk, "-v", f"v={version}", self.program, str(path)],
+                              capture_output=True, text=True, encoding="utf-8", check=True)
+        return done.stdout
+
+    def test_this_version_has_a_dated_heading(self):
+        text = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertRegex(text, rf"(?m)^## \[{re.escape(version.__version__)}\] - "
+                               r"\d{4}-\d{2}-\d{2}\r?$")
+
+    def test_extracts_this_versions_section(self):
+        notes = self._notes(version.__version__, REPO / "CHANGELOG.md")
+        self.assertIn("### Added", notes)
+        self.assertNotIn(f"## [{version.__version__}]", notes)
+        self.assertNotIn("All notable changes", notes)
+
+    def test_dated_sections_split_cleanly(self):
+        tmp = Path(tempfile.mkdtemp(prefix="changelog-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        path = tmp / "CHANGELOG.md"
+        path.write_text("# Changelog\n\nintro\n\n"
+                        "## [1.1.0] - 2026-11-01\n\n- newer\n\n"
+                        "## [1.0.0] - 2026-10-17\n\n- older\n", encoding="utf-8")
+        self.assertEqual(self._notes("1.1.0", path).split(), ["-", "newer"])
+        self.assertEqual(self._notes("1.0.0", path).split(), ["-", "older"])
+        self.assertEqual(self._notes("1.0", path), "")  # a prefix is not a match
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

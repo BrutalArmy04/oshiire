@@ -17,6 +17,8 @@ import os
 import tempfile
 from pathlib import Path
 
+import fsutil
+
 SETTINGS_PATH = Path("data/settings.json")
 
 WINDOW_KEY = "window"
@@ -76,7 +78,7 @@ def _save_key(key, value, valid, path):
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2)
             fh.write("\n")
-        os.replace(tmp, path)
+        fsutil.replace(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)

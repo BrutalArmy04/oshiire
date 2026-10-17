@@ -26,7 +26,6 @@ CLI:
 import argparse
 import io
 import json
-import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +35,7 @@ from typing import Optional
 # the one User-Agent definition. `useragent` is stdlib-only, so this is a
 # top-level import rather than the deferred in-function one it used to be --
 # that deferral existed only to avoid importing ingest.py for a single function.
+import fsutil
 from hash_index import compute_phash, hamming, _configure_pillow
 from manifest import load_manifest, save_manifest
 from useragent import build_user_agent
@@ -263,7 +263,7 @@ def _add(source: str, label: str, host: Optional[str], max_distance: int) -> Non
 
     tmp = TOMBSTONES_PATH.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    os.replace(tmp, TOMBSTONES_PATH)
+    fsutil.replace(tmp, TOMBSTONES_PATH)
     print(f"Added signature '{label}': phash={phash} dims={width}x{height} "
           f"size={len(raw)}B -> {TOMBSTONES_PATH}")
 

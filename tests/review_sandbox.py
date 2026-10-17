@@ -105,6 +105,31 @@ def _environment(root, env):
             os.chdir(prev_cwd)
 
 
+class _SandboxConfigState(dict):
+    """config._state for an ACTIVE sandbox: exactly what config does with no
+    state (root = the live cwd, environment = the live os.environ) except that
+    the app folder is an empty one -- so a config.get() made while a test runs
+    (review._reddit_username, jobs.run_steps, ...) can never read the real
+    app-folder .env, not just the import."""
+
+    def __getitem__(self, key):
+        if key == "root":
+            return Path.cwd()
+        if key == "process_env":
+            return os.environ
+        return super().__getitem__(key)
+
+
+@contextlib.contextmanager
+def _config_without_app_env():
+    app_dir = Path(tempfile.mkdtemp(prefix="oshiire-review-app-"))
+    try:
+        with mock.patch.object(config, "_state", _SandboxConfigState(app_dir=app_dir)):
+            yield
+    finally:
+        shutil.rmtree(app_dir, ignore_errors=True)
+
+
 def _swap_modules(modules):
     """Put `modules` in the STATEFUL_MODULES slots (empty slots for the rest) and
     return what was there, for _restore_modules."""
@@ -154,6 +179,7 @@ class ReviewSandbox:
             return self.modules[self.module_name]
         stack = contextlib.ExitStack()
         stack.enter_context(_environment(self.root, self.env))
+        stack.enter_context(_config_without_app_env())
         stack.callback(_restore_modules, _swap_modules(self.modules or {}))
         self._stack = stack
         if self.modules is None:

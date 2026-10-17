@@ -89,7 +89,9 @@ logged-out requests, and every row of this sweep is an old.reddit HTML fetch
 (see "What it does per row" below). Without a session cookie, all of them come
 back as the login wall.
 
-Set it as described in [SETUP.md](SETUP.md) step 4 — briefly: devtools →
+Set it as described in
+[SETUP.md → Gallery posts / Reddit login cookie](SETUP.md#gallery-posts--reddit-login-cookie)
+— briefly: devtools →
 Network → any logged-in `old.reddit.com` request → Request Headers → copy the
 whole `Cookie:` value into `REDDIT_SESSION_COOKIE`. It is a secret; whoever
 holds it is logged in as you.

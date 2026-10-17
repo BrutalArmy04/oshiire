@@ -19,6 +19,7 @@ message. A setting that comes from the environment or a .env file is shown as
 read-only ("Set in .env") without its value, and is never written.
 """
 import base64
+import itertools
 import os
 import queue
 import re
@@ -33,6 +34,7 @@ from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 import config
 import datahome
+import fsutil
 import settings
 
 FEED_KEY = "REDDIT_SAVED_FEED_URL"
@@ -52,8 +54,11 @@ RESULT_SKIPPED = "skipped"
 RESULT_CANCELLED = "cancelled"
 RESULT_UNAVAILABLE = "unavailable"  # no tkinter / no display
 
-COOKIE_LINE = ("Gallery posts need a Reddit login cookie -- that's an advanced "
-               "setting, see docs/SETUP.md.")
+GITHUB_REPO_URL = "https://github.com/BrutalArmy04/oshiire"
+COOKIE_DOCS_ANCHOR = "gallery-posts--reddit-login-cookie"  # docs/SETUP.md's heading
+COOKIE_DOCS_URL = f"{GITHUB_REPO_URL}/blob/main/docs/SETUP.md#{COOKIE_DOCS_ANCHOR}"
+COOKIE_LINE = "Gallery posts need a Reddit login cookie."
+COOKIE_LINK = "How to set it up"
 
 
 # --------------------------------------------------------------------------- #
@@ -370,7 +375,7 @@ def create_shortcut(platform=None, runner=None):
             spec["path"].parent.mkdir(parents=True, exist_ok=True)
             tmp = spec["path"].with_suffix(".tmp")
             tmp.write_text(spec["content"], encoding="utf-8")
-            os.replace(tmp, spec["path"])
+            fsutil.replace(tmp, spec["path"])
             return (True, "Added Oshiire to the app menu.")
     except (OSError, subprocess.SubprocessError):
         pass
@@ -431,11 +436,65 @@ def _system_is_dark():
         return False
 
 
-def resolve_theme(theme_value=None):
+GSETTINGS_TIMEOUT_S = 1
+
+
+def _gsettings(key, runner=None):
+    """`gsettings get org.gnome.desktop.interface <key>` unquoted, or '' when
+    gsettings is missing, fails, or takes longer than a second."""
+    runner = runner or subprocess.run
+    try:
+        done = runner(["gsettings", "get", "org.gnome.desktop.interface", key],
+                      capture_output=True, text=True, timeout=GSETTINGS_TIMEOUT_S,
+                      stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return ""
+    if getattr(done, "returncode", 1) != 0:
+        return ""
+    return (getattr(done, "stdout", "") or "").strip().strip("'\"").strip()
+
+
+def _linux_is_dark(runner=None):
+    """GNOME's color-scheme ('prefer-dark'), else a gtk-theme named *-dark.
+    Light when neither says dark or gsettings can't answer."""
+    if _gsettings("color-scheme", runner) == "prefer-dark":
+        return True
+    return _gsettings("gtk-theme", runner).lower().endswith("-dark")
+
+
+def resolve_theme(theme_value=None, platform=None):
     theme_value = theme_value or settings.theme()
     if theme_value in ("light", "dark"):
         return theme_value
+    platform = platform or sys.platform
+    if platform.startswith("linux"):
+        return "dark" if _linux_is_dark() else "light"
     return "dark" if _system_is_dark() else "light"
+
+
+# Body text family per platform; headings are the same family, bold and larger.
+WINDOWS_FONT = "Segoe UI"
+LINUX_FONTS = ("Noto Sans", "Ubuntu", "Cantarell", "DejaVu Sans")
+TITLE_SIZE = 16
+HEAD_SIZE = 11
+# Tk's named fonts every ttk widget draws with (TkFixedFont: the window shows no
+# monospace text, so it is left alone).
+TK_NAMED_FONTS = ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont",
+                  "TkCaptionFont", "TkSmallCaptionFont", "TkIconFont", "TkTooltipFont")
+
+
+def choose_font_family(available, platform=None):
+    """The body family to use, from the families Tk actually has, or None to
+    keep TkDefaultFont's own family. Windows: Segoe UI (today's look). Linux:
+    the first of LINUX_FONTS installed -- a family Tk doesn't have would fall
+    back to a bitmap X11 font."""
+    platform = platform or sys.platform
+    available = set(available)
+    if platform == "win32":
+        return WINDOWS_FONT if WINDOWS_FONT in available else None
+    if platform.startswith("linux"):
+        return next((name for name in LINUX_FONTS if name in available), None)
+    return None
 
 
 def _enable_dpi_awareness():
@@ -446,6 +505,33 @@ def _enable_dpi_awareness():
         ctypes.windll.shcore.SetProcessDpiAwareness(2)  # per-monitor aware
     except Exception:
         pass  # already set for this process, or an older Windows
+
+
+CHECK_MARK = ((0.22, 0.52), (0.42, 0.72), (0.78, 0.30))  # fractions of the box
+_ELEMENT_IDS = itertools.count(1)
+
+
+def check_images(tk, master, size, box, edge, accent, mark):
+    """(off, on) PhotoImages for a checkbox: an outlined box, and an accent-
+    filled box with a check mark. Each is `size` square plus a transparent gap
+    on the right that spaces the label."""
+    gap = max(4, size // 3)
+    border = max(1, size // 14)
+    images = []
+    for fill, outline in ((box, edge), (accent, accent)):
+        image = tk.PhotoImage(master=master, width=size + gap, height=size)
+        image.put(outline, to=(0, 0, size, size))
+        image.put(fill, to=(border, border, size - border, size - border))
+        images.append(image)
+    stroke = max(2, round(size / 7))
+    points = [(x * size, y * size) for x, y in CHECK_MARK]
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        steps = int(max(abs(x1 - x0), abs(y1 - y0)) * 2) + 1
+        for i in range(steps + 1):
+            x = int(x0 + (x1 - x0) * i / steps - stroke / 2)
+            y = int(y0 + (y1 - y0) * i / steps - stroke / 2)
+            images[1].put(mark, to=(x, y, x + stroke, y + stroke))
+    return tuple(images)
 
 
 # --------------------------------------------------------------------------- #
@@ -487,6 +573,7 @@ class SetupWindow:
             style.theme_use("clam")
         except tk.TclError:
             pass
+        self._setup_fonts()
         style.configure(".", background=c["paper"], foreground=c["ink"])
         style.configure("TFrame", background=c["paper"])
         style.configure("Card.TFrame", background=c["door"], relief="flat")
@@ -495,9 +582,9 @@ class SetupWindow:
         style.configure("Hint.TLabel", background=c["door"], foreground=c["ink2"])
         style.configure("Note.TLabel", background=c["paper"], foreground=c["ink2"])
         style.configure("Title.TLabel", background=c["paper"], foreground=c["ink"],
-                        font=("Segoe UI", 16, "bold"))
+                        font=self.title_font)
         style.configure("Head.TLabel", background=c["door"], foreground=c["ink"],
-                        font=("Segoe UI", 11, "bold"))
+                        font=self.head_font)
         style.configure("Bad.TLabel", background=c["door"], foreground=c["seal"])
         style.configure("Good.TLabel", background=c["door"], foreground=c["ok"])
         style.configure("TButton", background=c["door"], foreground=c["ink"],
@@ -506,6 +593,14 @@ class SetupWindow:
         style.configure("Primary.TButton", background=c["btn"], foreground=c["on_btn"])
         style.map("Primary.TButton", background=[("active", c["btn"])],
                   foreground=[("active", c["on_btn"])])
+        # Link: a button drawn as underlined text, for "How to set it up".
+        style.configure("Link.TButton", background=c["paper"], foreground=c["btn"],
+                        bordercolor=c["paper"], lightcolor=c["paper"], darkcolor=c["paper"],
+                        borderwidth=0, relief="flat", padding=(0, 0), font=self.link_font)
+        style.map("Link.TButton", background=[("active", c["paper"]), ("pressed", c["paper"])],
+                  foreground=[("active", c["ink"])],
+                  lightcolor=[("pressed", c["paper"])], darkcolor=[("pressed", c["paper"])])
+        self._style_checkbuttons(style)
         style.configure("TCheckbutton", background=c["door"], foreground=c["ink"])
         style.map("TCheckbutton", background=[("active", c["door"])])
         style.configure("Page.TCheckbutton", background=c["paper"], foreground=c["ink"])
@@ -553,6 +648,7 @@ class SetupWindow:
             self.feed_var.trace_add("write", lambda *_: self._feed_changed())
         self.feed_msg = ttk.Label(card, text="", style="Hint.TLabel", wraplength=500)
         self.feed_msg.grid(row=4, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        self.feed_msg.grid_remove()  # shown by _say only while it has text
 
         # -- archive folder --
         self.archive_var = tk.StringVar(value=self._prefill(ARCHIVE_KEY))
@@ -571,6 +667,7 @@ class SetupWindow:
                 row=2, column=1, padx=(8, 0))
         self.archive_msg = ttk.Label(card, text="", style="Hint.TLabel", wraplength=500)
         self.archive_msg.grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        self.archive_msg.grid_remove()
 
         # -- username --
         self.user_var = tk.StringVar(value=self._prefill(USER_KEY))
@@ -582,9 +679,13 @@ class SetupWindow:
             ttk.Entry(card, textvariable=self.user_var, width=30).grid(
                 row=1, column=0, sticky="w", pady=(4, 0))
 
-        ttk.Label(outer, text=COOKIE_LINE, style="Note.TLabel", wraplength=520).grid(
-            row=row, sticky="w", pady=(4, 8))
+        cookie = ttk.Frame(outer)
+        cookie.grid(row=row, sticky="w", pady=(4, 8))
         row += 1
+        ttk.Label(cookie, text=COOKIE_LINE, style="Note.TLabel").grid(row=0, column=0, sticky="w")
+        self.cookie_link = ttk.Button(cookie, text=COOKIE_LINK, style="Link.TButton",
+                                      cursor="hand2", command=self._open_cookie_docs)
+        self.cookie_link.grid(row=0, column=1, sticky="w", padx=(6, 0))
 
         # -- first-run extras --
         self.shortcut_var = tk.BooleanVar(value=datahome.is_release())
@@ -616,6 +717,44 @@ class SetupWindow:
             col += 1
         ttk.Button(buttons, text="Cancel", command=self.cancel).grid(row=0, column=col)
 
+    def _setup_fonts(self):
+        """Title/heading/link fonts, from a family Tk really has (see
+        choose_font_family). On Linux the chosen family also replaces Tk's named
+        fonts, so entries, buttons and labels never fall back to a bitmap font;
+        on Windows those are left exactly as they were."""
+        from tkinter import font as tkfont
+        root = self.root
+        family = choose_font_family(tkfont.families(root))
+        if family and sys.platform != "win32":
+            for name in TK_NAMED_FONTS:
+                try:
+                    tkfont.nametofont(name, root=root).configure(family=family)
+                except self.tk.TclError:
+                    pass
+        default = tkfont.nametofont("TkDefaultFont", root=root)
+        base = family or default.actual("family")
+        self.title_font = tkfont.Font(root=root, family=base, size=TITLE_SIZE, weight="bold")
+        self.head_font = tkfont.Font(root=root, family=base, size=HEAD_SIZE, weight="bold")
+        self.link_font = default.copy()
+        self.link_font.configure(underline=True)
+
+    def _style_checkbuttons(self, style):
+        """A check mark for "on" (clam's own indicator draws an X): two images,
+        sized from the default font, as the indicator element of TCheckbutton
+        (and so of Page.TCheckbutton too)."""
+        from tkinter import font as tkfont
+        c = self.colors
+        linespace = tkfont.nametofont("TkDefaultFont", root=self.root).metrics("linespace")
+        off, on = check_images(self.tk, self.root, max(13, int(linespace * 0.85)),
+                               box=c["door"], edge=c["line"], accent=c["btn"], mark=c["on_btn"])
+        self._check_images = (off, on)  # Tk keeps no reference of its own
+        element = f"oshiire_check{next(_ELEMENT_IDS)}.indicator"
+        style.element_create(element, "image", off, ("selected", on), sticky="w")
+        style.layout("TCheckbutton", [("Checkbutton.padding", {"sticky": "nswe", "children": [
+            (element, {"side": "left", "sticky": ""}),
+            ("Checkbutton.focus", {"side": "left", "sticky": "w", "children": [
+                ("Checkbutton.label", {"sticky": "nswe"})]})]})])
+
     def _card(self, parent, row, title):
         frame = self.ttk.Frame(parent, style="Card.TFrame", padding=12)
         frame.grid(row=row, sticky="ew", pady=(0, 10))
@@ -645,8 +784,11 @@ class SetupWindow:
         if self.feed_entry is not None:
             self.feed_entry.configure(show="" if self.show_var.get() else "•")
 
+    def _open_cookie_docs(self):
+        webbrowser.open(COOKIE_DOCS_URL)
+
     def _feed_changed(self):
-        self.feed_msg.configure(text="", style="Hint.TLabel")
+        self._say(self.feed_msg, "")
         ok, normalized, _ = validate_feed_url(self.feed_var.get())
         if ok and not self.user_var.get().strip() and not self._locked(USER_KEY):
             self.user_var.set(feed_user(normalized))
@@ -657,11 +799,15 @@ class SetupWindow:
                                          title="Choose your archive folder")
         if chosen:
             self.archive_var.set(str(Path(chosen)))
-            self.archive_msg.configure(text="", style="Hint.TLabel")
+            self._say(self.archive_msg, "")
 
     def _say(self, label, text, good=None):
         style = "Hint.TLabel" if good is None else ("Good.TLabel" if good else "Bad.TLabel")
         label.configure(text=text, style=style)
+        if text:
+            label.grid()
+        else:
+            label.grid_remove()  # an empty line would leave a gap under the card
 
     # -- worker threads (they only ever put plain tuples on the queue) ----------
     def start_test(self):

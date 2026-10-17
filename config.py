@@ -33,6 +33,7 @@ from pathlib import Path
 from dotenv import dotenv_values
 
 import datahome
+import fsutil
 
 CONFIG_KEYS = (
     "REDDIT_SAVED_FEED_URL",
@@ -256,7 +257,7 @@ def save_setup(values):
             fh.write(text)
         if sys.platform != "win32":
             os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
+        fsutil.replace(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)

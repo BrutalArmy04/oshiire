@@ -11,6 +11,7 @@ check; exits non-zero if any check fails.
 import argparse
 import json
 import os
+import platform
 import re
 import sys
 import tempfile
@@ -41,6 +42,27 @@ class SkipCheck(Exception):
     pass
 
 
+def info(name, text):
+    """A fact worth printing that is neither a pass nor a failure."""
+    print(f"INFO  {name}: {text}", flush=True)
+
+
+def _importable(module):
+    import importlib.util
+    try:
+        return importlib.util.find_spec(module) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _dist_version(name):
+    from importlib import metadata
+    try:
+        return metadata.version(name)
+    except metadata.PackageNotFoundError:
+        return "?"
+
+
 def _dotenv_in_reach(start):
     for folder in [start, *start.parents]:
         if (folder / ".env").exists():
@@ -61,6 +83,11 @@ def main():
     parser.add_argument("--app", type=Path, required=True)
     args = parser.parse_args()
     app = args.app.resolve()
+    # pywebview resolves sys.argv[0] against the cwd while it imports (a
+    # default argument in webview/window.py); after the chdir to the data root
+    # below, a relative "tools/smoke_release.py" no longer exists. The
+    # launchers pass app.py by absolute path, so match them.
+    sys.argv[0] = os.path.abspath(sys.argv[0])
     home = Path(tempfile.mkdtemp(prefix="oshiire-smoke-")).resolve()
 
     for key in ("REDDIT_SAVED_FEED_URL", "ARCHIVE_DIR", "REDDIT_USERNAME",
@@ -158,6 +185,47 @@ def main():
         root.destroy()
         return "Tk() opened and closed"
     check("Tk()", tk_window)
+
+    def native_window():
+        # Everything app.py needs for window mode, short of opening a window:
+        # pywebview's GUI is only touched by setup_app()/create_window(), which
+        # nothing here calls.
+        import webview
+        version = getattr(webview, "__version__", None) or _dist_version("pywebview")
+        if sys.platform != "win32":
+            backends = [m for m in ("gi", "qtpy") if _importable(m)]
+            if not backends:
+                info("native window", "no GUI backend (browser mode)")
+            return f"pywebview {version} imports"
+        import clr  # noqa: F401  pythonnet, via clr_loader: loads .NET in-process
+        import pythonnet
+        import System
+        runtime = f"{pythonnet.get_runtime_info().kind} {System.Environment.Version}"
+        from webview.util import interop_dll_path
+        arch = {"AMD64": "win-x64", "ARM64": "win-arm64", "x86": "win-x86"}.get(
+            platform.machine(), "win-x64")
+        loader = Path(interop_dll_path(arch)) / "WebView2Loader.dll"
+        assert loader.is_file(), f"missing {loader}"
+        for dll in ("Microsoft.Web.WebView2.Core.dll", "Microsoft.Web.WebView2.WinForms.dll"):
+            assert Path(interop_dll_path(dll)).is_file(), f"missing {dll}"
+        # The winforms module picks its renderer at import: with no WebView2
+        # runtime registered it would take the MSHTML path, which writes an IE
+        # emulation key to the registry. WEBVIEW2_RUNTIME_PATH (pywebview's own
+        # setting, this process only) keeps it on the Edge path, so the import
+        # loads WinForms and both WebView2 assemblies and has no side effects.
+        saved = webview.settings["WEBVIEW2_RUNTIME_PATH"]
+        webview.settings["WEBVIEW2_RUNTIME_PATH"] = str(loader.parent)
+        try:
+            from webview.platforms import winforms
+        finally:
+            webview.settings["WEBVIEW2_RUNTIME_PATH"] = saved
+        assert winforms.renderer == "edgechromium", winforms.renderer
+        installed = winforms._is_chromium()
+        info("WebView2 runtime", "installed" if installed else
+             "not installed (window mode falls back to the browser)")
+        return (f"pywebview {version}, pythonnet on {runtime}, "
+                f"{loader.relative_to(Path(webview.__file__).parent)}")
+    check("native window readiness (no window opened)", native_window)
 
     def serve():
         config = state["config"]

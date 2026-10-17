@@ -1,5 +1,8 @@
 # Oshiire
 
+[![Download for Windows](https://img.shields.io/badge/Download_for-Windows-0078D4?style=for-the-badge)](https://github.com/BrutalArmy04/oshiire/releases/latest/download/Oshiire-Windows.zip)
+[![Download for Linux](https://img.shields.io/badge/Download_for-Linux-E95420?style=for-the-badge)](https://github.com/BrutalArmy04/oshiire/releases/latest/download/Oshiire-Linux.tar.gz)
+
 A local, single-user pipeline that archives saved anime-style artwork from a
 Reddit account. It reads a private Reddit "saved" RSS feed, downloads the
 images, guesses the character(s) via post metadata and a local AI tagger as a
@@ -10,15 +13,62 @@ Everything runs locally. No image, title, or metadata is ever sent to a third
 party — the only outbound network calls are to Reddit itself (to read the
 feed, fetch post pages, and download images).
 
-**Setup & usage:** see [docs/SETUP.md](docs/SETUP.md).
+## Get started
+
+### Windows
+
+1. **Download** [Oshiire-Windows.zip](https://github.com/BrutalArmy04/oshiire/releases/latest/download/Oshiire-Windows.zip)
+   (about 300 MB).
+2. **Right-click it → Extract All.** This takes a few minutes (about 23,000
+   files). Then open the extracted `Oshiire` folder and double-click
+   **`Oshiire.bat`**.
+3. If Windows shows **"Windows protected your PC"**, click **More info → Run
+   anyway** (only the first time). Then fill in the setup window, and tick
+   **Add Oshiire to the Start menu** to start it from there from then on.
+
+### Linux
+
+1. **Download** [Oshiire-Linux.tar.gz](https://github.com/BrutalArmy04/oshiire/releases/latest/download/Oshiire-Linux.tar.gz).
+2. In the folder you downloaded it to, run:
+   ```
+   tar -xzf Oshiire-Linux.tar.gz && ./Oshiire/oshiire.sh
+   ```
+3. Fill in the setup window, and tick **Add Oshiire to the app menu** to start
+   it from there from then on.
+
+Requirements: x86_64, glibc 2.28 or newer (Ubuntu 20.04+, Debian 10+,
+Fedora 29+). On Linux Oshiire opens in your web browser.
+
+**macOS:** there is no packaged copy; run it from source — see
+[docs/SETUP.md](docs/SETUP.md#from-source).
+
+### Good to know
+
+- **The AI model** downloads once (about 450 MB), the first time AI tagging
+  runs — or ahead of time from the setup window.
+- **Your data** lives apart from the app, in `%LOCALAPPDATA%\Oshiire` (Windows)
+  or `~/.local/share/oshiire` (Linux). **? → Open data folder** on the home
+  menu opens it. Details: [where everything lives](docs/SETUP.md#where-everything-lives).
+- **Updating:** download the new version, extract it, and delete the old
+  `Oshiire` folder. Your data is kept.
+- **Uninstalling:** delete the `Oshiire` folder, the data folder, and the Start
+  menu or app menu entry. (The AI model sits in the Hugging Face cache,
+  `.cache/huggingface` in your home folder; delete it too if nothing else uses
+  it.)
+- **Gallery posts** need a Reddit login cookie — see
+  [Gallery posts / Reddit login cookie](docs/SETUP.md#gallery-posts--reddit-login-cookie).
+- **Nothing leaves your computer** except the requests to Reddit and the
+  one-time model download.
+
+**Setup & usage in depth:** see [docs/SETUP.md](docs/SETUP.md).
 **Reaching saves the RSS feed can't see:** see [docs/BACKFILL.md](docs/BACKFILL.md).
 
 ## Using it
 
 It's **one app**. Double-click **`Oshiire.bat`** (Windows) or **`oshiire.sh`**
 (Linux/macOS) and it opens in your **web browser** by default. Prefer its own
-window instead, or set Light / Dark / Match system, under **Manage → Settings →
-App** (stored in `data/settings.json`). In browser mode, **Quit Oshiire** in the
+window instead (Windows), or set Light / Dark / Match system, under **Manage →
+Settings → App** (stored in `data/settings.json` in your data folder). In browser mode, **Quit Oshiire** in the
 header stops it; in a window, closing the window quits. A second double-click
 while it's already running just opens another tab (browser) or focuses the
 window.
@@ -152,7 +202,8 @@ browser steps that free headroom in Reddit's capped saved listing.
 
 ## Tech stack
 
-- **Python 3.14** — what the project is developed and run on; `Oshiire.bat`
+- **Python 3.14** — what the project is developed and run on. A downloaded
+  copy carries its own 3.14 in `runtime/`; in a git checkout `Oshiire.bat`
   invokes a `.venv-win` built with it. Nothing in the *syntax* needs it
   (the highest requirement anywhere is `int.bit_count()`, 3.10+), but the AI
   tagger, the perceptual-hash tooling and the review UI have only ever been
@@ -172,11 +223,6 @@ browser steps that free headroom in Reddit's capped saved listing.
 - **AI tagger:** `dghs-imgutils` (WD14) + `onnxruntime`, local inference only.
 - **Review/resolve UI:** `gradio` (pinned to 6.19.0).
 - **Config:** `python-dotenv`.
-
-`requirements.txt` is everything needed to **run** Oshiire. A separate
-`requirements-dev.txt` (Playwright, fonttools) is only for **contributors** —
-running the opt-in end-to-end test or rebuilding the bundled fonts — and is not
-needed for normal use. Install is covered in [docs/SETUP.md](docs/SETUP.md).
 
 ## Status
 
@@ -275,6 +321,50 @@ Built since the first release:
 Also open: a button to re-run AI tagging on demand (today it runs automatically
 after Ingest and Backfill).
 
+
+## For developers
+
+Running from source needs **Python 3.14** (see the numpy note in
+[docs/SETUP.md](docs/SETUP.md#from-source) — it is the one step people miss):
+
+```
+git clone https://github.com/BrutalArmy04/oshiire.git
+cd oshiire
+install.bat        (Windows: builds .venv-win)
+./install.sh       (Linux/macOS: builds .venv)
+```
+
+Then either copy `.env.example` to `.env` and fill it in, or just start
+`Oshiire.bat` / `oshiire.sh` and let the setup window write
+`data/config.env`. In a checkout the data folder is the repo folder itself.
+Full walkthrough: [From source](docs/SETUP.md#from-source).
+
+`requirements.txt` is everything needed to **run** Oshiire. A separate
+`requirements-dev.txt` (Playwright, fonttools) is only for **contributors** —
+running the opt-in end-to-end test or rebuilding the bundled fonts — and is not
+needed for normal use. `requirements-lock.txt` is the exact package set a
+release ships.
+
+Tests:
+
+```
+python -m unittest discover -s tests
+```
+
+### Making a release
+
+1. Bump `__version__` in `version.py`.
+2. Add a `## [X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md` — it becomes the
+   release notes.
+3. Commit.
+4. `git tag vX.Y.Z`
+5. `git push origin vX.Y.Z`
+
+CI (`.github/workflows/release.yml`) does the rest: it builds and tests the
+Windows and Linux copies and publishes the release with
+`Oshiire-Windows.zip` and `Oshiire-Linux.tar.gz`. Running the workflow by hand
+(**workflow_dispatch**) is a dry run: it builds and tests both and uploads them
+as workflow artifacts, without creating a release.
 
 ## Design doc
 

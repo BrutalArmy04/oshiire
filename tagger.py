@@ -5,12 +5,12 @@ this only tries the metadata path (subreddit_map.json + title parsing); no
 torch/imgutils import here or anywhere else.
 """
 import json
-import os
 import re
 import sys
 from collections import namedtuple
 from pathlib import Path
 
+import fsutil
 from shortname import dedupe_names
 
 Guess = namedtuple("Guess", ["name", "confidence", "source"])
@@ -102,7 +102,7 @@ def subreddit_is_mapped(subreddit: str, path: Path = SUBREDDIT_MAP_PATH) -> bool
 def _atomic_write_json(data: dict, path: Path) -> None:
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     tmp_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp_path, path)
+    fsutil.replace(tmp_path, path)
 
 
 def save_subreddit_map_entry(subreddit: str, franchise: str, character: str = None,

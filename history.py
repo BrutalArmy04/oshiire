@@ -26,6 +26,7 @@ from dotenv import load_dotenv
 from PIL import Image, ImageOps
 from starlette.exceptions import StarletteDeprecationWarning
 
+import fsutil
 from manifest import load_manifest
 
 warnings.filterwarnings("ignore", category=StarletteDeprecationWarning)
@@ -130,7 +131,7 @@ def _thumbnail_for(src: Path) -> str:
             # sees a half-written JPEG -- it sees the old file or the new one.
             tmp = dest.with_name(f"{key}.{os.getpid()}.tmp")
             img.save(tmp, "JPEG", quality=THUMB_QUALITY)
-        os.replace(tmp, dest)
+        fsutil.replace(tmp, dest)
         return str(dest)
     except Exception:
         # Clean up a partial temp so repeated failures can't litter data/thumbs.

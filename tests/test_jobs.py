@@ -134,9 +134,14 @@ class RelabelForAppTest(unittest.TestCase):
 class RunStepsTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="jobs-run-"))
+        # run_steps reads the merged config (child_overrides, secret_values):
+        # without this it reads the real app-folder .env.
+        self._sandbox = isolated_config(self.tmp)
+        self._sandbox.__enter__()
         jobs.finish()  # start from a free lock
 
     def tearDown(self):
+        self._sandbox.__exit__(None, None, None)
         shutil.rmtree(self.tmp, ignore_errors=True)
         jobs.finish()
 
@@ -224,9 +229,14 @@ class RunStepsTest(unittest.TestCase):
 class LockTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="jobs-lock-"))
+        # run_steps reads the merged config (child_overrides, secret_values):
+        # without this it reads the real app-folder .env.
+        self._sandbox = isolated_config(self.tmp)
+        self._sandbox.__enter__()
         jobs.finish()
 
     def tearDown(self):
+        self._sandbox.__exit__(None, None, None)
         shutil.rmtree(self.tmp, ignore_errors=True)
         jobs.finish()
 

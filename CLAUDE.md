@@ -88,6 +88,43 @@ are gone. Modules:
   `set OSHIIRE_E2E=1 && python -m unittest tests.test_quit_e2e`. It needs
   `requirements-dev.txt` (Playwright) and builds a sandbox from the committed
   `*.example*` files — never the real data.
+- No test may read the real `.env`. Config reads go through
+  `tests/config_sandbox.py` (`isolated_config`) or, for anything that imports
+  review/resolve/history, `tests/review_sandbox.py` (`ReviewSandbox`, which
+  points config at an empty app folder for as long as it is active).
+
+## Releases
+- A downloaded copy is the app files + a python-build-standalone 3.14 in
+  `runtime/` + every package, built by `tools/build_release.py` and tested by
+  `tools/smoke_release.py`; `.github/workflows/release.yml` runs both on
+  Windows and Linux. Stdlib only, both of them.
+- **The marker file** `oshiire_release.json` (written by the build next to
+  `app.py`, never present in a checkout) is what makes a copy a release:
+  `datahome.is_release()`.
+- **The data root** (`datahome.data_root()`, and it is the cwd — `app.py`
+  chdirs there): `OSHIIRE_HOME` if set; else in a release the per-user folder
+  (`%LOCALAPPDATA%\Oshiire`, `~/.local/share/oshiire` or
+  `$XDG_DATA_HOME/oshiire`, `~/Library/Application Support/Oshiire`); else, in
+  a checkout, the app folder. App files (scripts, fonts, the userscript,
+  `data/tombstones.json`) are anchored to `datahome.APP_DIR`, never the cwd.
+- `requirements-lock.txt` is the exact package set a release installs
+  (`--no-deps --only-binary=:all:`). Regenerate it from a working `.venv-win`
+  with `python -m pip freeze --all`, then drop pip and the dev-only chain
+  (playwright, pyee, greenlet, fonttools) and re-add the platform markers —
+  the steps are in the file's header.
+- `SOURCE_ONLY` in `build_release.py` (bchlib, proxy_tools, sgmllib3k) have no
+  3.14 wheel; the workflow builds them from source first (manylinux_2_28 on
+  Linux, so the Linux release runs on glibc 2.28 and newer).
+- **User-site isolation:** the runtime must never import from a per-user
+  site-packages. Windows: a `python314._pth` next to `python.exe` pins
+  `sys.path` to the runtime and the app folder. Linux: `oshiire.sh` exports
+  `PYTHONNOUSERSITE=1`. Every build-time call uses `-s` + `PYTHONNOUSERSITE`.
+- **The asset names are fixed:** `Oshiire-Windows.zip` and
+  `Oshiire-Linux.tar.gz` (`ARCHIVE_NAMES`); the README's download buttons link
+  `/releases/latest/download/<name>`, and a test checks both.
+- To release: bump `version.py`, add a dated `## [X.Y.Z] - YYYY-MM-DD`
+  CHANGELOG section (the release notes are cut from it), commit, push a
+  `vX.Y.Z` tag. A manual run of the workflow is a dry run.
 
 ## Gradio 6.19 / WebView gotchas (learned the hard way)
 - `gr.Button` `elem_classes` land on the `<button>` itself — target `.door`, not
@@ -127,7 +164,17 @@ are gone. Modules:
   browser — whoever holds it is logged in as the account owner, so it is the
   more dangerous of the two). They can live in `.env` or in
   `data/config.env` (written by the setup window via `config.save_setup`);
-  `config.py` merges env > .env > data/config.env. Reference the feed URL as
+  `config.py` merges env > .env > data/config.env. In full, highest first:
+  the process environment, `<data root>/.env`, `<app folder>/.env` (skipped
+  when it is the same file), `<data root>/data/config.env` — and config.env
+  contributes only the four `CONFIG_KEYS`. In a release the data root is the
+  per-user folder (see Releases), so a downloaded copy's cookie lives in a
+  `.env` the user creates there; the setup window never stores the cookie and
+  never writes a `.env`. `data/config.env` is 0600 on POSIX, gitignored, and
+  on `build_release.py`'s deny list. The archive folder may not be or contain
+  the app folder or the data root (`setup_window.validate_archive_dir`): it is
+  a gradio allowed path, and either would make `.env`/`config.env` servable.
+  Reference the feed URL as
   `os.environ["REDDIT_SAVED_FEED_URL"]`. The cookie is used for requests in
   exactly one place, `useragent.build_headers`, and callers pass the built
   headers around rather than the value; `config.secret_values()` also reads
@@ -144,7 +191,10 @@ are gone. Modules:
   skips anything already in the manifest, so re-seeing an archived post in the
   feed is a harmless no-op. Ingestion is idempotent. (This is what replaces
   unsaving.)
-- **All manifest writes are atomic**: write to a temp file, then `os.replace()`.
+- **All manifest writes are atomic**: write to a temp file, then `os.replace()`
+  — always via `fsutil.replace()`, which retries briefly on Windows while
+  another process holds the file open. No app module calls `os.replace`
+  itself (`tests/test_fsutil.py` checks).
   Never write the manifest in place.
 - **The character guesser is a stable seam.** One function:
   `guess_character(image_path, post_metadata) -> Guess(name, confidence, source)`.

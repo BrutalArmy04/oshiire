@@ -33,10 +33,10 @@ Safety model (an id is emitted only if the post is provably captured):
     manifest membership only -- never from the log alone.
 """
 import json
-import os
 import sys
 from pathlib import Path
 
+import fsutil
 from manifest import load_manifest
 
 LOG_PATH = Path("data/backfill") / "backfill_log.jsonl"
@@ -217,7 +217,7 @@ def main() -> None:
     ids = sorted(r["whitelist"])  # sorted -> stable diffs
     tmp = OUTPUT_PATH.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(ids, indent=0), encoding="utf-8")
-    os.replace(tmp, OUTPUT_PATH)
+    fsutil.replace(tmp, OUTPUT_PATH)
 
     print_summary(r)
     print(f"  NEW since last export ...... {new_since_last:>7,}   <- posts to drain")

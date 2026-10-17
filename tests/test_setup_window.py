@@ -431,6 +431,80 @@ class ChangeModeEntryTest(unittest.TestCase):
         self.assertEqual(calls, ["load", "change"])
 
 
+class FontChoiceTest(unittest.TestCase):
+    def test_windows_keeps_segoe_ui(self):
+        self.assertEqual(sw.choose_font_family({"Segoe UI", "Arial"}, "win32"), "Segoe UI")
+        self.assertIsNone(sw.choose_font_family({"Arial"}, "win32"))
+
+    def test_linux_takes_the_first_installed_in_order(self):
+        self.assertEqual(sw.choose_font_family({"DejaVu Sans", "Cantarell"}, "linux"),
+                         "Cantarell")
+        self.assertEqual(sw.choose_font_family(set(sw.LINUX_FONTS), "linux"), "Noto Sans")
+        self.assertEqual(sw.choose_font_family({"DejaVu Sans", "fixed"}, "linux"),
+                         "DejaVu Sans")
+
+    def test_nothing_known_keeps_tk_default(self):
+        self.assertIsNone(sw.choose_font_family({"fixed", "helvetica"}, "linux"))
+        self.assertIsNone(sw.choose_font_family({"Segoe UI"}, "darwin"))
+
+
+class FakeGsettings:
+    """subprocess.run stand-in: {key: stdout | exception}; records the calls."""
+
+    def __init__(self, answers, returncode=0):
+        self.answers, self.returncode, self.calls = answers, returncode, []
+
+    def __call__(self, argv, **kwargs):
+        self.calls.append((argv, kwargs))
+        answer = self.answers.get(argv[-1], "")
+        if isinstance(answer, BaseException):
+            raise answer
+        return mock.Mock(returncode=self.returncode, stdout=answer)
+
+
+class LinuxThemeTest(unittest.TestCase):
+    def test_color_scheme_prefer_dark(self):
+        fake = FakeGsettings({"color-scheme": "'prefer-dark'\n"})
+        self.assertTrue(sw._linux_is_dark(fake))
+        argv, kwargs = fake.calls[0]
+        self.assertEqual(argv, ["gsettings", "get", "org.gnome.desktop.interface",
+                                "color-scheme"])
+        self.assertEqual(kwargs["timeout"], 1)
+
+    def test_gtk_theme_ending_in_dark(self):
+        fake = FakeGsettings({"color-scheme": "'default'\n", "gtk-theme": "'Adwaita-dark'\n"})
+        self.assertTrue(sw._linux_is_dark(fake))
+        fake = FakeGsettings({"color-scheme": "'default'\n", "gtk-theme": "'Yaru'\n"})
+        self.assertFalse(sw._linux_is_dark(fake))
+
+    def test_missing_failing_or_slow_gsettings_is_light(self):
+        import subprocess
+        for answer in (FileNotFoundError(2, "gsettings"),
+                       subprocess.TimeoutExpired("gsettings", 1), OSError(13, "denied")):
+            with self.subTest(answer=type(answer).__name__):
+                self.assertFalse(sw._linux_is_dark(
+                    FakeGsettings({"color-scheme": answer, "gtk-theme": answer})))
+        failing = FakeGsettings({"color-scheme": "'prefer-dark'"}, returncode=1)
+        self.assertFalse(sw._linux_is_dark(failing))
+
+    def test_resolve_theme_on_linux(self):
+        with mock.patch.object(sw, "_linux_is_dark", return_value=True), \
+             mock.patch.object(sw, "_system_is_dark", side_effect=AssertionError):
+            self.assertEqual(sw.resolve_theme("system", platform="linux"), "dark")
+            self.assertEqual(sw.resolve_theme("light", platform="linux"), "light")
+        with mock.patch.object(sw, "_linux_is_dark", return_value=False):
+            self.assertEqual(sw.resolve_theme("system", platform="linux"), "light")
+
+
+class CookieDocsLinkTest(unittest.TestCase):
+    def test_url_comes_from_the_repo_constant_and_the_anchor_exists(self):
+        from doc_links import anchors
+        self.assertEqual(sw.COOKIE_DOCS_URL,
+                         f"{sw.GITHUB_REPO_URL}/blob/main/docs/SETUP.md#{sw.COOKIE_DOCS_ANCHOR}")
+        self.assertIn(sw.COOKIE_DOCS_ANCHOR, anchors(REPO / "docs" / "SETUP.md"))
+        self.assertNotIn("docs/SETUP.md", sw.COOKIE_LINE)
+
+
 def _tk_root():
     try:
         import tkinter
@@ -574,6 +648,44 @@ class WindowTest(_Sandbox):
         win.show_var.set(True)
         win._toggle_show()
         self.assertEqual(win.feed_entry.cget("show"), "")
+
+    def test_empty_messages_take_no_space(self):
+        win = self._window()
+        for label in (win.feed_msg, win.archive_msg):
+            self.assertEqual(label.winfo_manager(), "")  # not gridded while empty
+        win._say(win.feed_msg, "Testing...")
+        self.assertEqual(win.feed_msg.winfo_manager(), "grid")
+        win.feed_var.set("x")  # editing the link clears the message again
+        self.assertEqual(win.feed_msg.winfo_manager(), "")
+
+    def test_cookie_link_opens_the_setup_section(self):
+        win = self._window()
+        self.assertEqual(win.cookie_link.cget("text"), sw.COOKIE_LINK)
+        with mock.patch.object(sw.webbrowser, "open") as opened:
+            win.cookie_link.invoke()
+        opened.assert_called_once_with(sw.COOKIE_DOCS_URL)
+
+    def test_checkbox_draws_a_check_mark_image(self):
+        win = self._window()
+        layout = repr(win.ttk.Style(self.tk_root).layout("TCheckbutton"))
+        self.assertIn("oshiire_check", layout)
+        off, on = win._check_images
+        self.assertEqual((off.width(), off.height()), (on.width(), on.height()))
+        # The middle of the "on" box is the accent colour or the mark, never the
+        # empty box colour.
+        size = on.height()
+        accent = self.tk_root.winfo_rgb(win.colors["btn"])
+        self.assertEqual(tuple(c * 257 for c in on.get(size // 2, size // 5)), accent)
+
+    def test_headings_use_the_body_family(self):
+        from tkinter import font as tkfont
+        win = self._window()
+        body = tkfont.nametofont("TkDefaultFont", root=self.tk_root).actual("family")
+        expected = sw.choose_font_family(tkfont.families(self.tk_root)) or body
+        for font, size in ((win.title_font, sw.TITLE_SIZE), (win.head_font, sw.HEAD_SIZE)):
+            self.assertEqual(font.actual("family"), expected)
+            self.assertEqual(font.actual("weight"), "bold")
+            self.assertEqual(font.cget("size"), size)
 
 
 if __name__ == "__main__":

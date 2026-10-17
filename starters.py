@@ -15,6 +15,8 @@ import os
 import tempfile
 from pathlib import Path
 
+import fsutil
+
 LAYOUT_PATH = Path("layout.json")
 
 # The smallest layout every reader accepts: archive.route_entry indexes all
@@ -59,7 +61,7 @@ def _write_if_missing(path, text):
         if path.exists():  # appeared while we wrote -- keep it, drop ours
             os.unlink(tmp)
             return False
-        os.replace(tmp, path)
+        fsutil.replace(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)

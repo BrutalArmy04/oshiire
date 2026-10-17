@@ -4,7 +4,122 @@ This is the hands-on guide: install it, configure it, and run it for the
 first time. For the pitch, architecture, and screenshots, see the main
 [README](../README.md).
 
-## Install & setup
+There are two ways to run Oshiire:
+
+- **A downloaded copy** (most people): the Windows `.zip` or Linux `.tar.gz`
+  from the [README](../README.md#get-started). It carries its own Python and
+  every package; nothing to install. See [Downloaded copy](#downloaded-copy).
+- **From source** (contributors): a git checkout with your own Python 3.14
+  virtualenv. See [From source](#from-source).
+
+Everything after those two sections — the gallery cookie, `layout.json`, the
+first run, daily usage — applies to both.
+
+## Downloaded copy
+
+Extract the archive and start `Oshiire.bat` (Windows) or `oshiire.sh` (Linux).
+The first time, a **setup window** asks for three things:
+
+- your **saved-feed link** (with a "Test it" button and steps for finding it;
+  see [step 3 under From source](#from-source) for what that link is and why
+  it is a secret),
+- your **archive folder** — where your sorted pictures go; it may be empty, or
+  a cloud-synced folder,
+- your **Reddit username** (optional).
+
+**Save** writes them to `data/config.env` **inside your data folder** (below),
+never to a `.env`, and never into the app folder. **Skip for now** writes
+nothing but a note (in `data/settings.json`) that the window was answered, so
+it doesn't open again. To change them later: **Manage →
+Settings → App → Change setup...** (the change applies the next time Oshiire
+starts).
+
+The first-run window also offers a **Start menu** entry (Windows) or **app
+menu** entry (Linux) and a one-time **download of the AI model** (about 450 MB;
+otherwise it downloads the first time AI tagging runs).
+
+### Where everything lives
+
+| What | Where |
+|---|---|
+| The app (code + its own Python) | the `Oshiire` folder you extracted. Nothing in it is yours: replace it to update, delete it to uninstall. |
+| **Your data** (the data folder) | Windows `%LOCALAPPDATA%\Oshiire`, Linux `~/.local/share/oshiire` (or `$XDG_DATA_HOME/oshiire`). **? → Open data folder** on the home menu opens it. Set `OSHIIRE_HOME` to use another folder. |
+| In the data folder | `manifest.json` (every post Oshiire has seen), `staging/` (images waiting for review), `layout.json`, `subreddit_map.json`, `known_series_names.txt`, and `data/`: `config.env` (the setup window's settings), `settings.json` (window mode, appearance), `series_aliases.json`, the archive index `archive_index.db`, `thumbs/`, and the run log `oshiire.log`. |
+| Your sorted archive | the archive folder you chose — only **File images** writes there. |
+| The AI model | the Hugging Face cache in your home folder (`.cache/huggingface`). |
+| Start-menu / app-menu entry | `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Oshiire.lnk` / `~/.local/share/applications/oshiire.desktop` |
+
+On first start Oshiire creates **empty** `manifest.json`, `layout.json`,
+`subreddit_map.json` and `known_series_names.txt` in the data folder; they fill
+up as you review (see [layout.json: a worked example](#layoutjson-a-worked-example)).
+
+**Updating:** download the new version, extract it, and delete the old
+`Oshiire` folder. Your data folder is not touched.
+
+**Where a setting comes from.** Oshiire reads its settings from, highest first:
+the process environment, a `.env` in the **data folder**, a `.env` in the
+**app folder**, then `data/config.env`. A setting that comes from a `.env` or
+the environment shows as "Set in .env" in the setup window and can only be
+changed there. The setup window never writes a `.env`.
+
+## Gallery posts / Reddit login cookie
+
+Single-image posts need nothing more than the feed link. Three parts of Oshiire
+read server-rendered `old.reddit.com` pages instead of the feed: ingest's
+**gallery** fetch (the feed has no per-image data for a gallery post), the
+**Backfill** sweep, and `calibrate.py`. Since the end of July 2026 old.reddit
+requires a logged-in session for those pages, and serves its login page — as a
+normal HTTP 200 — to anyone without one. A logged-in **cookie** copied from
+your browser, `REDDIT_SESSION_COOKIE`, is what makes them return real pages.
+The RSS feed does **not** need it; that is read from `www.reddit.com` with no
+cookie at all.
+
+Without it, gallery posts are recorded as retryable `skipped` entries (nothing
+is lost: the next ingest after you add the cookie picks them up), and Backfill
+can't run.
+
+**Where to put it.** The cookie lives only in a `.env` file; the setup window
+deliberately has no box for it.
+
+- **Downloaded copy:** on the home menu click **?** → **Open data folder**, and
+  in that folder create a plain-text file named exactly `.env` (on Windows, in
+  Notepad choose *Save as type: All files*, or it becomes `.env.txt`) holding
+  one line:
+
+  ```
+  REDDIT_SESSION_COOKIE=reddit_session=<value>; token_v2=<value>; ...
+  ```
+
+  Oshiire reads the data folder's `.env` fresh for every job, so the next
+  Ingest or Backfill uses it; no restart needed.
+- **From source:** add the same line to the `.env` in the repo folder.
+
+**To get the value:** open devtools (F12) → **Network** tab → load any page on
+`old.reddit.com` while logged in → click that request → **Headers** →
+**Request Headers** → copy the entire `Cookie:` value, and paste it after
+`REDDIT_SESSION_COOKIE=` as one line.
+
+**Treat it like a password — worse, in fact:** whoever holds it is logged in as
+you, with none of the feed token's read-only limits. Never paste it into an
+issue, a chat, or a screenshot. (In a git checkout `.env` is gitignored.) Leave
+it out if you only ingest single-image posts from the feed and never run
+backfill.
+
+It expires: a password change or a logout invalidates it, and it expires on its
+own besides. When a run stops with **`Reddit returned its login wall`**, copy
+it again.
+
+The cookie is necessary but not sufficient — those fetches also go out over
+`curl_cffi`'s Chrome-impersonated transport (see step 1 under
+[From source](#from-source)). You don't configure that; it just explains why a
+hand-rolled `curl` with the same cookie still hits the wall.
+
+## From source
+
+For contributors: a git checkout run with your own Python. Here the data
+folder is the repo folder itself (unless `OSHIIRE_HOME` is set), so
+`manifest.json`, `staging/`, `layout.json` and `data/` sit next to the code,
+all gitignored.
 
 0. **Python version — use 3.14.**
 
@@ -115,48 +230,32 @@ first time. For the pitch, architecture, and screenshots, see the main
    The feed returns your ~25 most recent saves by default; appending
    `&limit=100` widens that to ~100.
 
-4. Copy `.env.example` to `.env` and fill in:
-   - `REDDIT_SAVED_FEED_URL` — the URL from step 3.
-   - `ARCHIVE_DIR` — the folder your sorted archive should live in. **This
-     does not need to exist as a real archive already** — see "Your first
-     run" below. It can be a cloud-synced folder like Google Drive; this
-     project only ever moves files into it, the sync client handles the
-     upload.
-   - `REDDIT_USERNAME` — optional, included in the request User-Agent per
-     Reddit's API etiquette guidelines. Leave it blank to use a generic value.
-   - `REDDIT_SESSION_COOKIE` — **the second secret in this file.** A logged-in
-     cookie string copied out of your browser. See below.
+4. Give Oshiire its settings — either way works:
+   - **The setup window.** Just start Oshiire (step 2 of "Your first run"):
+     with no feed link or archive folder configured, the same setup window a
+     downloaded copy shows opens and writes them to `data/config.env` (see
+     [Downloaded copy](#downloaded-copy)).
+   - **A `.env`.** Copy `.env.example` to `.env` and fill in:
+     - `REDDIT_SAVED_FEED_URL` — the URL from step 3.
+     - `ARCHIVE_DIR` — the folder your sorted archive should live in. **This
+       does not need to exist as a real archive already** — see "Your first
+       run" below. It can be a cloud-synced folder like Google Drive; this
+       project only ever moves files into it, the sync client handles the
+       upload.
+     - `REDDIT_USERNAME` — optional, included in the request User-Agent per
+       Reddit's API etiquette guidelines. Leave it blank to use a generic value.
+     - `REDDIT_SESSION_COOKIE` — **the second secret in this file**, needed for
+       gallery posts and backfill. See
+       [Gallery posts / Reddit login cookie](#gallery-posts--reddit-login-cookie).
 
-   **About `REDDIT_SESSION_COOKIE`.** Three parts of Oshiire read
-   server-rendered `old.reddit.com` HTML rather than the feed: ingest's gallery
-   permalink fetch (galleries have no per-image data in the RSS), the backfill
-   CSV sweep, and `calibrate.py`. Since the end of July 2026 old.reddit
-   requires a logged-in session for those pages, and serves its login page —
-   as a normal HTTP 200 — to anyone without one. This cookie is what makes them
-   return real pages. The RSS feed does **not** need it; that is read from
-   `www.reddit.com` cookieless.
+     A value in `.env` wins over `data/config.env`, and the setup window shows
+     it as read-only.
 
-   To get it: open devtools (F12) → **Network** tab → load any page on
-   `old.reddit.com` while logged in → click that request → **Headers** →
-   **Request Headers** → copy the entire `Cookie:` value. Paste it into `.env`
-   as one line:
-
-   ```
-   REDDIT_SESSION_COOKIE=reddit_session=<value>; token_v2=<value>; ...
-   ```
-
-   Treat it like a password — worse, in fact: whoever holds it is logged in as
-   you, with none of the feed token's read-only limits. It is gitignored along
-   with the rest of `.env`; never paste it into an issue, a chat, or a
-   screenshot. Leave it blank if you only ingest single-image posts from the
-   feed and never run backfill.
-
-   The cookie is necessary but not sufficient — those fetches also go out over
-   `curl_cffi`'s Chrome-impersonated transport (see step 1). You don't
-   configure that; it just explains why a hand-rolled `curl` with the same
-   cookie still hits the wall.
-
-5. Copy the example config files to their real (gitignored) names. Every
+5. *(Optional.)* On first start Oshiire creates **empty** `manifest.json`,
+   `layout.json`, `subreddit_map.json`, `known_series_names.txt` and
+   `data/series_aliases.json` for you. Copy the example config files instead
+   only if you want to start from the demo content to see the format — they
+   carry invented franchises that would end up in a real archive. Every
    template ships as `<name>.example.<ext>`; the copy is yours, stays local,
    and the template stays committed as documentation of the format:
 
@@ -167,7 +266,7 @@ first time. For the pitch, architecture, and screenshots, see the main
    copy data\series_aliases.example.json data\series_aliases.json
    ```
 
-   (`.env.example` → `.env` you already did in step 4.)
+   (`.env.example` → `.env` is step 4's, if you chose a `.env`.)
 
    You don't need to fill these in completely before your first run — see
    below.
@@ -321,10 +420,14 @@ need to pre-populate a full subreddit map before starting.
 
 With that in mind, the first end-to-end run looks like this:
 
-1. **Build the archive index** — once, before anything else:
+1. **Build the archive index** — once, before anything else. From source:
    ```
    .venv-win\Scripts\python.exe hash_index.py build
    ```
+   (A downloaded copy has no terminal step for this: Oshiire builds and
+   refreshes the index itself at the end of every **File images** and
+   **Backfill** run.)
+
    This walks `ARCHIVE_DIR` and computes a perceptual hash of every image it
    finds, into a local SQLite index under `data/`. It is strictly read-only
    over your archive — it never moves, renames, writes or deletes anything
@@ -341,11 +444,14 @@ With that in mind, the first end-to-end run looks like this:
    It is also a hard prerequisite for the back-catalogue sweep — see
    [BACKFILL.md](BACKFILL.md).
 2. **Double-click `Oshiire.bat`** (Windows) or **`oshiire.sh`** (Linux/macOS).
-   Oshiire opens in your web browser. Everything below is a door on the home
+   The first time, the setup window asks for your feed link and archive folder
+   (see [Downloaded copy](#downloaded-copy)); then Oshiire opens in your web
+   browser. Everything below is a door on the home
    menu — no terminal.
 3. **Ingest** (Coming in) — fetches your saved feed and downloads new images
-   into `staging/`. AI tagging runs automatically when the fetch finishes.
-   Nothing is reviewed or filed yet; check `staging/` and you'll see the images.
+   into `staging/` (in your data folder). AI tagging runs automatically when
+   the fetch finishes. Nothing is reviewed or filed yet; check `staging/` and
+   you'll see the images.
 4. **Review** (the big door) — go through a few images: Accept the ones tagged
    correctly, fix the character/franchise fields and then Accept the ones that
    aren't, Skip anything you're unsure about (it comes back next time). Nothing
@@ -375,7 +481,9 @@ broken — you've hit Reddit's saved-listing ceiling. See
 If instead a run stops with **`Reddit returned its login wall`**, or ingest
 warns that a gallery fetch hit it, your `REDDIT_SESSION_COOKIE` has expired —
 a password change or a logout invalidates it, and they expire on their own
-besides. Re-copy it from the browser (step 4) and re-run. Nothing is lost:
+besides. Re-copy it from the browser (see
+[Gallery posts / Reddit login cookie](#gallery-posts--reddit-login-cookie)) and
+re-run. Nothing is lost:
 backfill rewinds its cursor to the row it was on, and a walled gallery is
 recorded as a retryable `skipped` entry that the next ingest picks up. If the
 *feed* is the thing returning the wall, check `REDDIT_SAVED_FEED_URL` uses the
@@ -411,7 +519,7 @@ The menu, in workflow order:
   local WD14 tagger fills whatever metadata left unidentified) — all recorded in
   `manifest.json`. Saved posts with no importable image (text, links, video, an
   unparseable gallery) are recorded as `skipped` and never reach review. To
-  inspect those from a terminal:
+  inspect those from a terminal (from source):
   `.venv-win\Scripts\python.exe ingest.py --list-skipped` (with
   `--retry-skipped KEY` to force a re-fetch, `--reject-skipped KEY` to close one
   out for good).
@@ -449,11 +557,15 @@ The menu, in workflow order:
   the manifest), and **Settings** (the five config editors plus the **App** tab
   for window/appearance).
 
-**Where things live.** App preferences in `data/settings.json` (window mode and
-appearance — never a secret; `.env` is never written). History thumbnails cache
-under `data/thumbs/`. The run log (useful if something goes wrong in window
-mode, where there's no console) is `data/oshiire.log`, rotated to
-`data/oshiire.prev.log`. All of `data/` is gitignored.
+**Where things live.** Everything below is in the data folder (a downloaded
+copy: `%LOCALAPPDATA%\Oshiire` or `~/.local/share/oshiire`; from source: the
+repo folder — see [Where everything lives](#where-everything-lives)). App
+preferences in `data/settings.json` (window mode and appearance — never a
+secret). The setup window's settings in `data/config.env`. Oshiire never writes
+a `.env`. History thumbnails cache under `data/thumbs/`. The run log (useful if
+something goes wrong in window mode, where there's no console) is
+`data/oshiire.log`, rotated to `data/oshiire.prev.log`. In a git checkout all
+of `data/` is gitignored.
 
 ### Duplicate detection needs the archive index
 
@@ -465,6 +577,8 @@ The archive half needs the perceptual-hash index built once — this is step 1 o
 ```
 .venv-win\Scripts\python.exe hash_index.py build
 ```
+
+(In a downloaded copy, the first **File images** run builds it.)
 
 Without it, review still works and still catches staging-vs-staging duplicates
 — it just can't tell you that an image is already filed in your archive. The

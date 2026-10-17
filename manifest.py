@@ -18,9 +18,10 @@ and, depending on status:
 skip_reason and reason are distinct fields -- never interchangeable.
 """
 import json
-import os
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
+
+import fsutil
 
 MANIFEST_PATH = Path("manifest.json")
 
@@ -76,4 +77,4 @@ def save_manifest(data: dict, path: Path = MANIFEST_PATH) -> None:
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     with tmp_path.open("w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, sort_keys=True)
-    os.replace(tmp_path, path)
+    fsutil.replace(tmp_path, path)

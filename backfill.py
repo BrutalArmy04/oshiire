@@ -66,6 +66,7 @@ from dotenv import load_dotenv
 # Mandated reuse -- hashing + nearest-neighbour, atomic manifest I/O, and the
 # Slice 1 metadata tagger. We also borrow ingest.py's download/UA/gallery-tile
 # primitives so this sweep is polite in exactly the same way as normal ingest.
+import fsutil
 import redditclient
 from hash_index import DEFAULT_DB, query_image, read_hash_bits, _configure_pillow
 from manifest import load_manifest, save_manifest
@@ -358,7 +359,7 @@ def save_state(state: dict) -> None:
     state["updated_at"] = datetime.now(timezone.utc).isoformat()
     tmp = STATE_PATH.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
-    os.replace(tmp, STATE_PATH)
+    fsutil.replace(tmp, STATE_PATH)
 
 
 def log_outcome(record: dict) -> None:
