@@ -187,6 +187,58 @@ class RunStepsTest(unittest.TestCase):
         self.assertNotIn(("step", "Later"), events)
         self.assertNotIn("SHOULD NOT RUN", _lines(events))
 
+    def _failed_events(self, steps):
+        events = list(jobs.run_steps(steps, threading.Event(), False))
+        return events, [e for e in events if e[0] == "failed"]
+
+    def test_a_later_failure_names_the_finished_steps_and_the_reason(self):
+        one = _script(self.tmp, "one.py", "print('one')")
+        two = _script(self.tmp, "two.py", "print('two')")
+        bad = _script(self.tmp, "bad.py", "import sys\n"
+                      "print('downloaded=1 pages=1')\n"
+                      "print('Your Reddit login cookie has expired or is wrong.', file=sys.stderr)\n"
+                      "sys.exit(1)")
+        events, failed = self._failed_events(
+            [Step("One", [one], "stop"), Step("Two", [two], "continue"),
+             Step("Three", [bad], "stop")])
+        self.assertEqual(failed, [("failed", ["One", "Two"], "Three",
+                                   "Your Reddit login cookie has expired or is wrong")])
+        # the existing done event is unchanged, and still comes last
+        self.assertEqual(events[-1], ("done", False, "Three failed (exit 1) -- see the log"))
+        self.assertLess(events.index(failed[0]), len(events) - 1)
+
+    def test_a_first_step_failure_has_nothing_finished(self):
+        bad = _script(self.tmp, "bad.py", "import sys; sys.exit(2)")
+        _, failed = self._failed_events([Step("One", [bad], "stop")])
+        self.assertEqual(failed, [("failed", [], "One", "exit 2")])  # silent -> the exit code
+
+    def test_a_tolerated_failure_is_not_counted_as_finished(self):
+        warn = _script(self.tmp, "warn.py", "import sys; sys.exit(5)")
+        bad = _script(self.tmp, "bad.py", "import sys; print('nope'); sys.exit(1)")
+        ok = _script(self.tmp, "ok.py", "print('fine')")
+        _, failed = self._failed_events(
+            [Step("Ok", [ok], "stop"), Step("Warned", [warn], "continue"),
+             Step("Bad", [bad], "stop")])
+        self.assertEqual(failed[0][1:3], (["Ok"], "Bad"))
+
+    def test_the_reason_skips_summary_lines_and_is_one_short_line(self):
+        long_text = "x" * 400
+        bad = _script(self.tmp, "bad.py",
+                      f"import sys\nprint('{long_text}')\nprint('OSHIIRE_SUMMARY moves=1')\nsys.exit(1)")
+        _, failed = self._failed_events([Step("Bad", [bad], "stop")])
+        reason = failed[0][3]
+        self.assertTrue(reason.startswith("xxx") and reason.endswith("…"))
+        self.assertLessEqual(len(reason), 200)
+
+    def test_a_secret_in_the_failing_line_is_redacted_in_the_reason(self):
+        (self.tmp / ".env").write_text("REDDIT_SESSION_COOKIE=reddit_session=TOPSECRETVALUE99\n",
+                                       encoding="utf-8")
+        with isolated_config(self.tmp):
+            bad = _script(self.tmp, "bad.py",
+                          "import sys; print('rejected TOPSECRETVALUE99'); sys.exit(1)")
+            _, failed = self._failed_events([Step("Bad", [bad], "stop")])
+        self.assertNotIn("TOPSECRETVALUE99", failed[0][3])
+
     def test_continue_warns_and_goes_on(self):
         failing = _script(self.tmp, "fail.py", "import sys; print('boom'); sys.exit(4)")
         later = _script(self.tmp, "later.py", "print('ran later')")

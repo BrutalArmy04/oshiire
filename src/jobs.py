@@ -291,9 +291,26 @@ def _terminate(proc):
         proc.wait()
 
 
+def _failure_reason(last_line, rc):
+    """One short, already-redacted line saying why a step failed: the last thing it
+    printed (a script's own error message, or a traceback's final line), else its
+    exit code. Collapsed to one line, capped, and without a trailing full stop so
+    it can sit at the end of a sentence."""
+    text = " ".join((last_line or "").split())
+    if not text:
+        return f"exit {rc}"
+    text = text.rstrip(".")
+    if len(text) > 200:
+        text = text[:199].rstrip() + "…"
+    return text
+
+
 def run_steps(steps, cancel, cancellable):
     """Run the steps, yielding ("line", text) / ("step", label) /
-    ("done", ok, summary). Never touches the lock; the caller owns it (and so
+    ("done", ok, summary). When a step that must not fail does, a
+    ("failed", finished_labels, failed_label, reason) event comes first, so the
+    result panel can say which steps had finished (see `_failure_reason`). Never
+    touches the lock; the caller owns it (and so
     keeps it held until after any post-job manifest reload).
 
     `cancel` is a threading.Event. When `cancellable`, setting it terminates the
@@ -303,6 +320,7 @@ def run_steps(steps, cancel, cancellable):
     secrets = _secrets_from_env()  # once per run; passed to every redact, never yielded
     proc = None
     reader = None
+    finished = []  # labels of the script steps that exited 0, in order
     try:
         for step in steps:
             if cancellable and cancel.is_set():
@@ -339,6 +357,7 @@ def run_steps(steps, cancel, cancellable):
             reader.start()
 
             cancelled = False
+            last_line = ""
             while True:
                 # Checked between polls (not only on an idle timeout) so a chatty
                 # child is still cancelled promptly, right after its latest line.
@@ -352,7 +371,10 @@ def run_steps(steps, cancel, cancellable):
                     continue
                 if line is _SENTINEL:
                     break
-                yield ("line", redact(line, secrets))
+                safe_line = redact(line, secrets)
+                if safe_line.strip() and not safe_line.startswith("OSHIIRE_"):
+                    last_line = safe_line
+                yield ("line", safe_line)
 
             reader.join(timeout=1)
             reader = None  # pump closed the pipe in its finally
@@ -364,9 +386,12 @@ def run_steps(steps, cancel, cancellable):
             proc = None
             if rc != 0:
                 if step.on_fail == "stop":
+                    yield ("failed", list(finished), step.label, _failure_reason(last_line, rc))
                     yield ("done", False, f"{step.label} failed (exit {rc}) -- see the log")
                     return
                 yield ("line", f"warning: {step.label} failed (exit {rc}); continuing.")
+            else:
+                finished.append(step.label)
 
         yield ("done", True, "")
     finally:

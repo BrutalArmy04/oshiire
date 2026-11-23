@@ -225,6 +225,31 @@ class JobResultTest(unittest.TestCase):
             self.assertIn("under Details", res.sentence)
             self.assertIsNone(res.next_label)
 
+    def test_a_later_step_failure_says_what_finished_and_what_failed(self):
+        res = review.job_result("backfill", "failed", {
+            "reason": "Ingest failed (exit 1) -- see the log",
+            "finished": ["Backfill", "Export unsave whitelist"],
+            "failed_step": "Ingest",
+            "step_reason": "Your Reddit login cookie has expired or is wrong",
+        })
+        self.assertFalse(res.seal)
+        self.assertEqual(
+            res.sentence,
+            "Backfill and Export unsave whitelist finished; Ingest failed: "
+            "Your Reddit login cookie has expired or is wrong. The full log is under Details.")
+        self.assertIsNone(res.next_label)
+
+    def test_finished_steps_are_joined_like_a_sentence(self):
+        self.assertEqual(review._join_labels(["A"]), "A")
+        self.assertEqual(review._join_labels(["A", "B"]), "A and B")
+        self.assertEqual(review._join_labels(["A", "B", "C"]), "A, B and C")
+
+    def test_a_first_step_failure_keeps_the_plain_wording(self):
+        res = review.job_result("ingest", "failed", {
+            "reason": "Ingest failed (exit 1) -- see the log",
+            "finished": [], "failed_step": "Ingest", "step_reason": "exit 1"})
+        self.assertIn("Didn't finish: Ingest failed (exit 1)", res.sentence)
+
     def test_second_line_passes_through_only_on_success(self):
         res = review.job_result("ingest", "success",
                                 {"new_waiting": 2, "second_line": "3 were skipped."})

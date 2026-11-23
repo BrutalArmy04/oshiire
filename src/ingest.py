@@ -572,9 +572,11 @@ def main():
 
     if failure:
         save_manifest(manifest)
-        print(failure, file=sys.stderr)
         print(f"downloaded={counts['downloaded']} skipped={counts['skipped']} "
               f"failed={counts['failed']} pages={counts['pages']}")
+        sys.stdout.flush()
+        # Last, so the job page's "Ingest failed: ..." shows the reason.
+        print(failure, file=sys.stderr)
         sys.exit(1)
 
     retry_counts = retry_skipped_galleries(manifest)

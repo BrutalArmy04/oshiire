@@ -583,6 +583,14 @@ JobResult = namedtuple("JobResult", "seal sentence second_line next_label second
                        defaults=(None,))
 
 
+def _join_labels(labels):
+    """'A', 'A and B', 'A, B and C' -- step names for a sentence."""
+    labels = list(labels)
+    if len(labels) <= 1:
+        return "".join(labels)
+    return ", ".join(labels[:-1]) + " and " + labels[-1]
+
+
 def job_result(job, outcome, counts=None):
     """Pure: (job, outcome, counts) -> JobResult for a finished job page.
 
@@ -598,6 +606,9 @@ def job_result(job, outcome, counts=None):
       safe        -- posts safe to unsave (export_unsave success), from the
                      OSHIIRE_UNSAVE count line;
       reason      -- one-line failure reason (failed);
+      finished, failed_step, step_reason -- for a failure at a LATER step of a
+                     multi-step job: the labels of the steps that had finished,
+                     the step that failed, and why (failed);
       second_line -- an extra fact the JOB itself reported (e.g. skipped
                      duplicates); shown in indigo-2. Never invented here.
     `next_label` is the primary next-step button's text, or None (then only the
@@ -607,6 +618,16 @@ def job_result(job, outcome, counts=None):
     second = counts.get("second_line")
 
     if outcome == "failed":
+        finished = counts.get("finished") or []
+        failed_step = counts.get("failed_step")
+        if finished and failed_step:
+            # A later step of a multi-step job: say what DID get done.
+            why = counts.get("step_reason") or counts.get("reason") or "see the log"
+            return JobResult(
+                False,
+                f"{_join_labels(finished)} finished; {failed_step} failed: {why}. "
+                "The full log is under Details.",
+                None, None)
         reason = counts.get("reason") or "see the log"
         return JobResult(False, f"Didn't finish: {reason}. The full log is under Details.",
                          None, None)
@@ -1999,6 +2020,7 @@ def _job_stream(steps, *, run_btn, run_label, back_btn, status_md, log_box,
 
         lines = []
         ok, summary = True, ""
+        failure = {}  # which steps finished before the failing one (run_steps' "failed")
         job_counts = {}  # from a structured OSHIIRE_SUMMARY line, if one came
         plan_rows = []   # from OSHIIRE_PLAN lines (Preview filing's table)
         last_emit = 0.0
@@ -2023,6 +2045,9 @@ def _job_stream(steps, *, run_btn, run_label, back_btn, status_md, log_box,
                 # Relabel command-line-only hints for the app log (display only;
                 # the line is already redacted, data/oshiire.log is untouched).
                 lines.append(jobs.relabel_for_app(event[1]))
+            elif kind == "failed":
+                failure = {"finished": event[1], "failed_step": event[2],
+                           "step_reason": event[3]}
             elif kind == "done":
                 ok, summary = event[1], event[2]
                 break
@@ -2052,6 +2077,7 @@ def _job_stream(steps, *, run_btn, run_label, back_btn, status_md, log_box,
             "new_waiting": max(0, _waiting_count() - waiting_before),
             "filed": max(0, _archived_count() - archived_before),
             "reason": summary,
+            **failure,
             **job_counts,
         }
         res = job_result(job_key, outcome, counts)
