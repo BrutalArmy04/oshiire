@@ -5,6 +5,7 @@ must be invoked explicitly:  python src/ai_tag.py [--force]
 import argparse
 from pathlib import Path
 
+import runlock
 from ai_tagger import guess_franchise_and_character_ai, model_is_cached
 from manifest import load_manifest, save_manifest
 from tag import print_table
@@ -65,6 +66,7 @@ def main() -> None:
     parser.add_argument("--force", action="store_true",
                          help="Re-run AI even on entries already guess_source == 'ai'")
     args = parser.parse_args()
+    runlock.guard("AI tagging")
 
     manifest = load_manifest()
     tagged = run_ai_tagging(manifest, force=args.force)

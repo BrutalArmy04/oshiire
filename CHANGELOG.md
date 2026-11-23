@@ -13,9 +13,11 @@ All notable changes to Oshiire are listed here. The format follows
 - The cookie now lives in the setup window instead of a hand-made `.env` file (a `.env` still works and takes priority).
 
 ### Added
+- `data/jobs.log` records each job's output (secrets redacted) with start and end times and exit codes, to help work out what ran when.
 - Crossposts remember the subreddit they were originally posted in.
 
 ### Fixed
+- Two Ingest runs at the same time could crash with a "manifest.json.tmp" error and overwrite each other's results. Only one pipeline job can run at a time now, a command-line run is refused while Oshiire is open, and each save of the manifest uses its own temporary file.
 - The cookie guide now tells you to open old.reddit.com, and "Test it" no longer reads like a total ("Logged in. Your saved list loads.").
 - In Resolve, an image with no character could not be filed under an existing character folder ("This entry has no character to alias"); the button now files it there.
 

@@ -413,6 +413,7 @@ def main() -> None:
     import argparse
     import time
 
+    import runlock
     from manifest import load_manifest, save_manifest
 
     parser = argparse.ArgumentParser(
@@ -420,6 +421,7 @@ def main() -> None:
     )
     parser.add_argument("command", nargs="?", default="warm", choices=["warm"])
     parser.parse_args()
+    runlock.guard("Hashing")
 
     manifest = load_manifest()
     hash_size = index_hash_size()

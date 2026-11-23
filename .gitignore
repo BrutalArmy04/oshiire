@@ -58,6 +58,11 @@ data/oshiire.log
 data/oshiire.prev.log
 data/oshiire.lock
 
+# Pipeline run lock and the job log (redacted, but account-derived). Machine-local.
+data/run.lock
+data/jobs.log
+data/jobs.prev.log
+
 # App preferences the app writes itself (launch mode). Machine-local; not a
 # secret (secrets live in .env, which the app never writes), but per-machine.
 data/settings.json

@@ -27,6 +27,7 @@ import requests
 from dotenv import load_dotenv
 
 import redditclient
+import runlock
 import savedlisting
 from manifest import load_manifest, save_manifest
 from tag import run_tagging
@@ -523,6 +524,8 @@ def _parse_args():
 
 def main():
     args = _parse_args()
+    if not args.list_skipped:  # read-only; every mode that writes the manifest is guarded
+        runlock.guard("Ingest")
 
     # Loaded before the triage dispatch, not after it: --retry-skipped fetches
     # permalinks, and that fetch now needs REDDIT_SESSION_COOKIE out of .env.

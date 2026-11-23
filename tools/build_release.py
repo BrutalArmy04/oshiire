@@ -93,7 +93,7 @@ DENY_APP_TREE = (
     "manifest.json", "layout.json", "subreddit_map.json",
     "staging/**",
     "data/settings.json", "data/config.env",
-    "data/archive_index.db*", "data/oshiire.*",
+    "data/archive_index.db*", "data/oshiire.*", "data/jobs.*", "data/run.lock",
     "data/thumbs/**",
     "data/backfill/**",  # *.example.* excepted below
     "data/saved_posts.csv", "data/unsave_list.json",

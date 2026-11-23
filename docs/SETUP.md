@@ -485,6 +485,17 @@ next ingest picks up.
 
 The daily loop is: **double-click Oshiire, then work through the home menu.**
 
+**One job at a time.** The pipeline scripts (Ingest, Backfill, File images,
+hashing, AI tagging) each rewrite the whole manifest, so only one may run at once:
+a second one stops at once with "<Job> is already running (started 20:01, process
+1234)", and the home menu greys the door out with the same sentence. The same
+rule keeps a **command-line** run (`python src/ingest.py` ...) from starting
+while Oshiire is open: it says "Oshiire is open. Close it, or run this from the
+app." (A job started from the app's own menu is always allowed.) The lock is
+released by the operating system if a run crashes or is killed. Each job's log is
+also appended, with start and end times and exit codes, to `data/jobs.log`
+(secrets redacted); it rotates to `data/jobs.prev.log` at about 2 MB.
+
 **Opening and closing.** `Oshiire.bat` (Windows) / `oshiire.sh` (Linux/macOS)
 opens it in your **web browser** by default. Prefer its own **window**, or set
 **Light / Dark / Match system**, under **Manage → Settings → App** — both are

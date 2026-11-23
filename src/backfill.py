@@ -68,6 +68,7 @@ from dotenv import load_dotenv
 # primitives so this sweep is polite in exactly the same way as normal ingest.
 import fsutil
 import redditclient
+import runlock
 from hash_index import DEFAULT_DB, query_image, read_hash_bits, _configure_pillow
 from manifest import load_manifest, save_manifest
 from tag import tag_entry
@@ -863,6 +864,7 @@ def print_summary(state, total_rows) -> None:
 # CLI
 # --------------------------------------------------------------------------- #
 def main() -> None:
+    runlock.guard("Backfill")
     # First, before anything reads the environment: the permalink fetch needs
     # REDDIT_SESSION_COOKIE, and build_user_agent needs REDDIT_USERNAME.
     load_dotenv()

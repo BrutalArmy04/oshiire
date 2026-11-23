@@ -234,8 +234,27 @@ configs against the cwd. Modules:
 - **All manifest writes are atomic**: write to a temp file, then `os.replace()`
   — always via `fsutil.replace()`, which retries briefly on Windows while
   another process holds the file open. No app module calls `os.replace`
-  itself (`tests/test_fsutil.py` checks).
+  itself (`tests/test_fsutil.py` checks). The temp file is UNIQUE per save
+  (`tempfile.mkstemp` beside the manifest, removed on failure) — a fixed
+  `manifest.json.tmp` let two saving processes rename each other's file away.
   Never write the manifest in place.
+- **One pipeline run at a time, and never beside an open app** (`runlock.py`).
+  The pipeline scripts load the whole manifest and save the whole manifest, so
+  concurrent writers are last-writer-wins. `ingest.py` (every mode except the read-only `--list-skipped`),
+  `backfill.py`, `archive.py --apply`, `imagemeta.py warm` and `ai_tag.py` call
+  `runlock.guard(<job name>)` at the top of `main()`: an exclusive OS lock on
+  `data/run.lock` held for the whole run (freed by the OS on a crash or kill; a
+  second run exits 1 with "<Job> is already running (started HH:MM, process
+  N)"), and a CLI run is refused ("Oshiire is open. Close it, or run this from
+  the app.") while the app holds `data/oshiire.lock`. The app's own jobs are
+  exempt: `jobs._child_env` sets `OSHIIRE_APP_PID` and a child counts as
+  app-started only if that pid is the one the app recorded in its lock file.
+  There is NO override flag. The menu greys Ingest / Backfill / File images out
+  while another run holds the lock (`jobs.run_lock_busy`). The review/resolve UI
+  still saves its own in-memory copy per click; making that safe alongside a run
+  (merge-on-save) is not built. Every job's redacted log is appended to
+  `data/jobs.log` (start/end stamps and exit codes; gitignored, never in a
+  release) so a run's timing can be reconstructed.
 - **The character guesser is a stable seam.** One function:
   `guess_character(image_path, post_metadata) -> Guess(name, confidence, source)`.
   Everything downstream depends on this signature, not on how the guess is made.

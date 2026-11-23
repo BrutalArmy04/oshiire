@@ -19,6 +19,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
+import runlock
 from hash_index import DEFAULT_DB, record_indexed_file
 from manifest import load_manifest, save_manifest
 from shortname import (
@@ -549,6 +550,8 @@ def main() -> None:
                          help="After the human table, print the plan rows as machine-readable "
                               "JSON lines (consumed by the app's Preview filing table).")
     args = parser.parse_args()
+    if args.apply:  # the dry run only reads
+        runlock.guard("File images")
 
     archive_dir = get_archive_dir()
     layout = load_layout()

@@ -18,6 +18,8 @@ and, depending on status:
 skip_reason and reason are distinct fields -- never interchangeable.
 """
 import json
+import os
+import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -75,7 +77,19 @@ def load_manifest(path: Path = MANIFEST_PATH) -> dict:
 
 
 def save_manifest(data: dict, path: Path = MANIFEST_PATH) -> None:
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    with tmp_path.open("w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, sort_keys=True)
-    fsutil.replace(tmp_path, path)
+    """Write `data` atomically: to a temp file of its OWN (unique per call, in the
+    manifest's folder), then renamed over `path` through fsutil.replace. The name
+    must be unique: a fixed "manifest.json.tmp" let two saving processes rename
+    each other's file out from under them. A failed write removes its temp file."""
+    path = Path(path)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, sort_keys=True)
+        fsutil.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise

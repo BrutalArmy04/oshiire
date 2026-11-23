@@ -7,7 +7,9 @@ archive.py, ai_tag.py, imagemeta.py, hash_index.py, export_unsave_list.py) are
 run AS THEY ARE, via [sys.executable, *argv], never imported for execution.
 
 Secrets never reach a log: every child line passes through redact() before it is
-yielded, and logs are never written to disk.
+yielded, and the only log written to disk, data/jobs.log, is made from those same
+redacted lines. (data/oshiire.log, the app's own log, keeps the child's verbatim
+stderr and is a separate file.)
 """
 import contextlib
 import json
@@ -18,11 +20,14 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from queue import Empty, Queue
 
 import config
 import datahome
+import fsutil
+import runlock
 
 # Imported for its path/parse helpers only (CSV_PATH, STATE_PATH, load_rows,
 # load_state) -- the single source of truth for the back-catalogue cursor. The
@@ -234,6 +239,65 @@ def running():
 # --------------------------------------------------------------------------- #
 # Runner
 # --------------------------------------------------------------------------- #
+JOBS_LOG_PATH = Path("data") / "jobs.log"  # relative -> the data root (the cwd)
+JOBS_LOG_MAX_BYTES = 2_000_000  # past this the next run rotates it to jobs.prev.log
+
+
+def _stamp():
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+class _JobLog:
+    """data/jobs.log: one block per run -- when it started, each step's start, its
+    REDACTED output lines and its exit code, and how the run ended -- so a run's
+    timing can be reconstructed later (two runs that overlapped, a crash, ...).
+
+    Only ever fed the lines run_steps already redacted for the UI, plus labels and
+    numbers; never the environment, the argv or a raw line. A log that can't be
+    written must not stop a job, so every failure just turns logging off."""
+
+    def __init__(self, path):
+        self._fh = None
+        try:
+            path = Path(path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists() and path.stat().st_size > JOBS_LOG_MAX_BYTES:
+                fsutil.replace(path, path.with_name("jobs.prev.log"))
+            self._fh = open(path, "a", encoding="utf-8", buffering=1)
+        except OSError:
+            self._fh = None
+
+    def _write(self, text):
+        if self._fh is None:
+            return
+        try:
+            self._fh.write(text + "\n")
+        except (OSError, ValueError):
+            self._fh = None
+
+    def begin(self, steps):
+        self._write(f"=== start {_stamp()}  steps: " + " | ".join(s.label for s in steps))
+
+    def step(self, label):
+        self._write(f"--- {label}: start {_stamp()}")
+
+    def line(self, text):
+        if not text.startswith("OSHIIRE_PLAN"):  # table rows: bulky and in the UI already
+            self._write(text)
+
+    def exit(self, label, rc):
+        self._write(f"--- {label}: exit {rc} at {_stamp()}")
+
+    def end(self, outcome):
+        self._write(f"=== end {_stamp()}  {outcome}")
+        if self._fh is not None:
+            try:
+                self._fh.close()
+            except OSError:
+                pass
+            self._fh = None
+
+
 def _child_env():
     env = dict(os.environ)
     # The four settings as they stand NOW (files re-read), so an edit to .env or
@@ -246,6 +310,10 @@ def _child_env():
             env[key] = value
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
+    # Tells the child it was started by THIS app, so runlock lets it run although
+    # the app is open (a CLI run is refused then). The child checks the pid
+    # against the one the app recorded in data/oshiire.lock.
+    env[runlock.APP_PID_ENV] = str(os.getpid())
     return env
 
 
@@ -321,17 +389,23 @@ def run_steps(steps, cancel, cancellable):
     proc = None
     reader = None
     finished = []  # labels of the script steps that exited 0, in order
+    log = _JobLog(JOBS_LOG_PATH)
+    log.begin(steps)
+    outcome = "interrupted"  # what the log says if the generator is closed mid-run
     try:
         for step in steps:
             if cancellable and cancel.is_set():
+                outcome = "cancelled"
                 yield ("done", False, "Cancelled")
                 return
             yield ("step", step.label)
+            log.step(step.label)
 
             if step.argv is None:  # cooldown pause
                 remaining = step.cooldown_s
                 while remaining > 0:
                     if cancellable and cancel.is_set():
+                        outcome = "cancelled"
                         yield ("done", False, "Cancelled")
                         return
                     if remaining == step.cooldown_s or remaining % 10 == 0:
@@ -374,27 +448,35 @@ def run_steps(steps, cancel, cancellable):
                 safe_line = redact(line, secrets)
                 if safe_line.strip() and not safe_line.startswith("OSHIIRE_"):
                     last_line = safe_line
+                log.line(safe_line)
                 yield ("line", safe_line)
 
             reader.join(timeout=1)
             reader = None  # pump closed the pipe in its finally
             if cancelled:
+                outcome = "cancelled"
                 yield ("done", False, "Cancelled")
                 return
 
             rc = proc.wait()
             proc = None
+            log.exit(step.label, rc)
             if rc != 0:
                 if step.on_fail == "stop":
+                    outcome = "failed"
                     yield ("failed", list(finished), step.label, _failure_reason(last_line, rc))
                     yield ("done", False, f"{step.label} failed (exit {rc}) -- see the log")
                     return
-                yield ("line", f"warning: {step.label} failed (exit {rc}); continuing.")
+                warning = f"warning: {step.label} failed (exit {rc}); continuing."
+                log.line(warning)
+                yield ("line", warning)
             else:
                 finished.append(step.label)
 
+        outcome = "ok"
         yield ("done", True, "")
     finally:
+        log.end(outcome)
         # Generator closed early (browser gone) with a child still alive, or a
         # mid-run exception: honour cancellability and clean up the child. The
         # lock is deliberately NOT released here -- the caller holds it across
@@ -428,6 +510,13 @@ def _backfill_at_data_root():
         backfill.CSV_PATH, backfill.STATE_PATH = old_csv, old_state
 
 
+def run_lock_busy():
+    """'<Job> is already running (started HH:MM, process N).' while a pipeline run
+    outside this app's own job (a command-line run) holds data/run.lock, else None.
+    The menu greys Ingest / Backfill / File images out with it."""
+    return runlock.busy_message()
+
+
 def ingest_available():
     """(ok, reason). Ingest reads the logged-in saved listing, so it needs the
     Reddit username and login cookie. Reasons never include a secret value."""
@@ -435,6 +524,9 @@ def ingest_available():
         return (False, "Your Reddit username isn't set up. Add it in Settings -> App.")
     if not config.get("REDDIT_SESSION_COOKIE").strip():
         return (False, "Your Reddit login cookie isn't set up. Add it in Settings -> App.")
+    busy = run_lock_busy()
+    if busy:
+        return (False, busy)
     return (True, "")
 
 
@@ -454,4 +546,7 @@ def backfill_available():
         if total == 1:
             return (False, "Backfill complete: the 1 saved post was swept.")
         return (False, f"Backfill complete: all {total} saved posts swept.")
+    busy = run_lock_busy()
+    if busy:
+        return (False, busy)
     return (True, "")

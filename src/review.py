@@ -1933,7 +1933,12 @@ def _menu_availability():
         interactive=backfill_ok,
         value=_door_label(_DOOR_TITLE["backfill"],
                           _DOOR_DESC["backfill"] if backfill_ok else backfill_reason))
+    run_busy = jobs.run_lock_busy()  # a command-line run holds data/run.lock
     for btn, key in putting_away:
+        if archive_ok and key == "file_images" and run_busy:
+            updates[btn] = gr.update(
+                interactive=False, value=_door_label(_DOOR_TITLE[key], run_busy))
+            continue
         updates[btn] = gr.update(
             interactive=archive_ok,
             value=_door_label(_DOOR_TITLE[key],

@@ -16,6 +16,7 @@ import textwrap
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
@@ -24,6 +25,23 @@ import jobs
 from jobs import Step
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # config_sandbox
 from config_sandbox import isolated_config
+
+
+_REAL_JOBS_LOG_PATH = jobs.JOBS_LOG_PATH
+_JOBS_LOG_TMP = None
+
+
+def setUpModule():
+    """run_steps now appends to data/jobs.log; point it at a temp file so no test
+    here writes the real data root's log (the job-log tests below set their own)."""
+    global _JOBS_LOG_TMP
+    _JOBS_LOG_TMP = tempfile.mkdtemp(prefix="jobs-log-")
+    jobs.JOBS_LOG_PATH = Path(_JOBS_LOG_TMP) / "jobs.log"
+
+
+def tearDownModule():
+    jobs.JOBS_LOG_PATH = _REAL_JOBS_LOG_PATH
+    shutil.rmtree(_JOBS_LOG_TMP, ignore_errors=True)
 
 
 def _app(name):
@@ -276,6 +294,143 @@ class RunStepsTest(unittest.TestCase):
         events = list(jobs.run_steps([Step("Short", [short], "stop")], cancel, False))
         self.assertEqual(events[-1], ("done", True, ""))
         self.assertIn("tick 2", _lines(events))
+
+
+class JobsLogTest(unittest.TestCase):
+    """data/jobs.log: when each run and step started and ended, with the exit codes
+    and the SAME redacted lines the UI shows -- never a secret."""
+    SESSION = "FAKESESSIONVALUE123456"
+    TOKEN = "FAKETOKENVALUE987654"
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="jobs-joblog-"))
+        (self.tmp / ".env").write_text(
+            f"REDDIT_SESSION_COOKIE=reddit_session={self.SESSION}; token_v2={self.TOKEN}\n",
+            encoding="utf-8")
+        self._sandbox = isolated_config(self.tmp)
+        self._sandbox.__enter__()
+        self.log_path = self.tmp / "data" / "jobs.log"
+        patcher = mock.patch.object(jobs, "JOBS_LOG_PATH", self.log_path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def tearDown(self):
+        self._sandbox.__exit__(None, None, None)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_steps(self, steps, cancellable=False):
+        return list(jobs.run_steps(steps, threading.Event(), cancellable))
+
+    def text(self):
+        return self.log_path.read_text(encoding="utf-8")
+
+    def test_a_run_is_logged_with_timestamps_steps_and_exit_codes(self):
+        ok = _script(self.tmp, "ok.py", "print('hello from ok')")
+        bad = _script(self.tmp, "bad.py", "import sys; print('about to fail'); sys.exit(3)")
+        self.run_steps([Step("Fetch", [ok], "stop"), Step("Break", [bad], "stop"),
+                        Step("Never", [ok], "stop")])
+        text = self.text()
+        stamp = r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d"
+        self.assertRegex(text, rf"=== start {stamp}  steps: Fetch \| Break \| Never")
+        self.assertRegex(text, rf"--- Fetch: start {stamp}")
+        self.assertIn("hello from ok", text)
+        self.assertRegex(text, rf"--- Fetch: exit 0 at {stamp}")
+        self.assertRegex(text, rf"--- Break: exit 3 at {stamp}")
+        self.assertRegex(text, rf"=== end {stamp}  failed")
+        self.assertNotIn("--- Never", text)                    # it never started
+        self.assertLess(text.index("--- Fetch: exit 0"), text.index("--- Break: start"))
+
+    def test_runs_append_after_each_other(self):
+        ok = _script(self.tmp, "ok.py", "print('x')")
+        self.run_steps([Step("One", [ok], "stop")])
+        self.run_steps([Step("Two", [ok], "stop")])
+        text = self.text()
+        self.assertEqual(text.count("=== start"), 2)
+        self.assertEqual(text.count("=== end"), 2)
+        self.assertLess(text.index("steps: One"), text.index("steps: Two"))
+
+    def test_the_cookie_never_reaches_the_log(self):
+        spill = _script(self.tmp, "spill.py", f"""
+            import os, sys
+            print("Cookie: reddit_session={self.SESSION}; token_v2={self.TOKEN}")
+            print("session is {self.SESSION} and token is {self.TOKEN}")
+            print("env copy:", os.environ.get("REDDIT_SESSION_COOKIE"))
+            print("the failure line {self.SESSION}", file=sys.stderr)
+            sys.exit(1)
+        """)
+        events = self.run_steps([Step("Leak", [spill], "stop")])
+        text = self.text()
+        for secret in (self.SESSION, self.TOKEN):
+            self.assertNotIn(secret, text)
+            self.assertNotIn(secret, repr(events))                 # same redaction as the UI
+        self.assertIn("[redacted]", text)
+        self.assertIn("--- Leak: exit 1", text)
+
+    def test_the_environment_and_argv_are_not_logged(self):
+        ok = _script(self.tmp, "ok.py", "pass")
+        self.run_steps([Step("Quiet", [ok, "--token", self.TOKEN], "stop")])
+        self.assertNotIn(self.TOKEN, self.text())
+        self.assertNotIn(str(self.tmp), self.text())
+
+    def test_a_warning_from_a_continuing_step_is_logged(self):
+        warn = _script(self.tmp, "warn.py", "import sys; sys.exit(5)")
+        self.run_steps([Step("Meh", [warn], "continue")])
+        self.assertIn("warning: Meh failed (exit 5); continuing.", self.text())
+        self.assertRegex(self.text(), r"=== end \S+  ok")
+
+    def test_plan_table_rows_are_not_logged(self):
+        plan = _script(self.tmp, "plan.py",
+                       "print('OSHIIRE_PLAN {\"image\": \"t3_x\"}'); print('kept line')")
+        self.run_steps([Step("Plan", [plan], "stop")])
+        self.assertNotIn("OSHIIRE_PLAN", self.text())
+        self.assertIn("kept line", self.text())
+
+    def test_cancelling_is_logged(self):
+        slow = _script(self.tmp, "slow.py", "import time; print('go', flush=True); time.sleep(60)")
+        cancel = threading.Event()
+        gen = jobs.run_steps([Step("Slow", [slow], "stop")], cancel, True)
+        for event in gen:
+            if event == ("line", "go"):
+                cancel.set()
+            if event[0] == "done":
+                break
+        gen.close()
+        self.assertRegex(self.text(), r"=== end \S+  cancelled")
+
+    def test_closing_the_generator_early_still_ends_the_block(self):
+        slow = _script(self.tmp, "slow.py", "import time; print('go', flush=True); time.sleep(60)")
+        gen = jobs.run_steps([Step("Slow", [slow], "stop")], threading.Event(), True)
+        for event in gen:
+            if event == ("line", "go"):
+                break
+        gen.close()
+        self.assertRegex(self.text(), r"=== end \S+  interrupted")
+
+    def test_a_log_that_cannot_be_written_never_stops_the_job(self):
+        blocker = self.tmp / "data"
+        blocker.mkdir(exist_ok=True)
+        (blocker / "not_a_folder").write_text("x", encoding="utf-8")
+        ok = _script(self.tmp, "ok.py", "print('still runs')")
+        with mock.patch.object(jobs, "JOBS_LOG_PATH", blocker / "not_a_folder" / "jobs.log"):
+            events = self.run_steps([Step("Fine", [ok], "stop")])
+        self.assertEqual(events[-1], ("done", True, ""))
+        self.assertIn("still runs", _lines(events))
+
+    def test_a_big_log_is_rotated_to_jobs_prev_log(self):
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.log_path.write_text("old run\n" * 50, encoding="utf-8")
+        ok = _script(self.tmp, "ok.py", "print('x')")
+        with mock.patch.object(jobs, "JOBS_LOG_MAX_BYTES", 100):
+            self.run_steps([Step("New", [ok], "stop")])
+        self.assertIn("old run", (self.log_path.parent / "jobs.prev.log").read_text(encoding="utf-8"))
+        self.assertNotIn("old run", self.text())
+        self.assertIn("steps: New", self.text())
+
+    def test_the_log_is_gitignored(self):
+        repo = Path(__file__).resolve().parent.parent
+        ignored = (repo / ".gitignore").read_text(encoding="utf-8").splitlines()
+        for name in ("data/jobs.log", "data/jobs.prev.log", "data/run.lock"):
+            self.assertIn(name, ignored)
 
 
 class LockTest(unittest.TestCase):

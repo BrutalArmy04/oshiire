@@ -159,6 +159,7 @@ class TreeScanTest(unittest.TestCase):
                "000___Known_Series_Names.txt", ".env", "staging/t3_x.jpg",
                "data/settings.json", "data/config.env", "data/archive_index.db",
                "data/archive_index.db-wal", "data/oshiire.log", "data/oshiire.lock",
+               "data/jobs.log", "data/jobs.prev.log", "data/run.lock",
                "data/thumbs/a.jpg", "data/backfill/state.json", "data/saved_posts.csv",
                "data/unsave_list.json", "runtime/Lib/.env", "docs/config.env"]
         for rel in bad:

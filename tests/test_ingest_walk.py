@@ -281,6 +281,7 @@ class MainTest(WalkBase):
         err, out = io.StringIO(), io.StringIO()
         env_patch = mock.patch.dict(os.environ, env or {})
         with env_patch, mock.patch.object(ingest, "load_dotenv"), \
+                mock.patch.object(ingest.runlock, "guard"), \
                 mock.patch.object(ingest, "run_tagging", return_value=[]), \
                 mock.patch.object(ingest, "retry_skipped_galleries",
                                   return_value={"retried": 0, "expanded": 0}), \
@@ -323,6 +324,7 @@ class MainTest(WalkBase):
                 (rows("t3_a"), "https://old.reddit.com/n")] + [sl.SavedRateLimited("429")] * 5):
             err, out = io.StringIO(), io.StringIO()
             with mock.patch.object(ingest, "load_dotenv"), \
+                    mock.patch.object(ingest.runlock, "guard"), \
                     mock.patch.object(sys, "argv", ["ingest.py"]), \
                     contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
                 with self.assertRaises(SystemExit) as ctx:
