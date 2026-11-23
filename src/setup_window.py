@@ -58,12 +58,35 @@ COOKIE_LINK = "More help copying it"
 # --------------------------------------------------------------------------- #
 # Does the first-run window need to open?
 # --------------------------------------------------------------------------- #
+FEED_KEY = "REDDIT_SAVED_FEED_URL"
+FEED_NOTICE = ("Reddit ended RSS feeds on 13 November 2026. Oshiire now reads your saved "
+               "list while logged in, so it needs your username and login cookie. Your old "
+               "feed link is no longer used.")
+
+
+def coming_from_feed():
+    """True for someone upgrading from the RSS-feed versions: the old feed link is
+    still in the merged config and the username or the login cookie is missing."""
+    if not config.get(FEED_KEY).strip():
+        return False
+    return not config.get(USER_KEY).strip() or not config.get(COOKIE_KEY).strip()
+
+
 def needs_setup():
     """True when the username, the login cookie or the archive folder is missing
     from the merged config AND the window was never answered (data/settings.json has no
-    "setup_done": true)."""
+    "setup_done": true). Also true, once, for an upgrader from the feed versions
+    (coming_from_feed) who has setup_done but never saw the window since."""
     missing = any(not config.get(key).strip() for key in REQUIRED_KEYS)
-    return missing and not settings.setup_done()
+    if missing and not settings.setup_done():
+        return True
+    return coming_from_feed() and not settings.feed_migration_done()
+
+
+def _mark_answered():
+    settings.save_setup_done(True)
+    if coming_from_feed():
+        settings.save_feed_migration_done(True)
 
 
 # --------------------------------------------------------------------------- #
@@ -379,13 +402,13 @@ def apply_save(values):
     to_save = {key: value for key, value in values.items() if key in allowed}
     if to_save:
         config.save_setup(to_save)
-    settings.save_setup_done(True)
+    _mark_answered()
     return to_save
 
 
 def apply_skip():
     """Skip for now: remember the window was answered, write nothing else."""
-    settings.save_setup_done(True)
+    _mark_answered()
 
 
 # --------------------------------------------------------------------------- #
@@ -600,6 +623,10 @@ class SetupWindow:
         ttk.Label(outer, text=intro, style="Note.TLabel", wraplength=520).grid(
             row=row, sticky="w", pady=(2, 12))
         row += 1
+        if coming_from_feed():
+            ttk.Label(outer, text=FEED_NOTICE, style="Note.TLabel", wraplength=520).grid(
+                row=row, sticky="w", pady=(0, 12))
+            row += 1
 
         # -- username --
         self.user_var = tk.StringVar(value=self._prefill(USER_KEY))

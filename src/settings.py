@@ -110,3 +110,18 @@ def setup_done(path=SETTINGS_PATH):
 def save_setup_done(done=True, path=SETTINGS_PATH):
     """Persist the setup_done flag atomically (see _save_key)."""
     _save_key(SETUP_DONE_KEY, bool(done), (True, False), path)
+
+
+# Set once the setup window was answered (Save or Skip) for a user who upgraded
+# from the RSS-feed versions, so the window reopens for them exactly once.
+FEED_MIGRATION_KEY = "feed_migration_done"
+
+
+def feed_migration_done(path=SETTINGS_PATH):
+    """True only when the file holds "feed_migration_done": true (a real bool)."""
+    return load_settings(path).get(FEED_MIGRATION_KEY) is True
+
+
+def save_feed_migration_done(done=True, path=SETTINGS_PATH):
+    """Persist the feed_migration_done flag atomically (see _save_key)."""
+    _save_key(FEED_MIGRATION_KEY, bool(done), (True, False), path)

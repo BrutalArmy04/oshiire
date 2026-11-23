@@ -201,6 +201,66 @@ class NeedsSetupTest(_Sandbox):
         os.environ[sw.ARCHIVE_KEY] = str(self.root)
         self.assertTrue(sw.needs_setup())
 
+    FEED = "https://www.reddit.com/saved.rss?feed=x&user=y"
+
+    def _upgrader(self, user=False, cookie=False):
+        """A 1.0.x user: feed link and archive folder set, setup already answered."""
+        os.environ[sw.FEED_KEY] = self.FEED
+        os.environ[sw.ARCHIVE_KEY] = str(self.root)
+        if user:
+            os.environ[sw.USER_KEY] = USER
+        if cookie:
+            os.environ[sw.COOKIE_KEY] = COOKIE
+        settings.save_setup_done(True)
+
+    def test_upgrader_from_the_feed_is_prompted_despite_setup_done(self):
+        for user, cookie in ((False, False), (True, False), (False, True)):
+            with self.subTest(user=user, cookie=cookie):
+                for key in (sw.USER_KEY, sw.COOKIE_KEY):
+                    os.environ.pop(key, None)
+                self._upgrader(user, cookie)
+                self.assertTrue(sw.coming_from_feed())
+                self.assertTrue(sw.needs_setup())
+
+    def test_upgrader_with_username_and_cookie_is_not_prompted(self):
+        self._upgrader(user=True, cookie=True)
+        self.assertFalse(sw.coming_from_feed())
+        self.assertFalse(sw.needs_setup())
+
+    def test_upgrader_is_prompted_once_skip_or_save(self):
+        for answer in ("skip", "save"):
+            with self.subTest(answer=answer):
+                for key in (sw.USER_KEY, sw.COOKIE_KEY):
+                    os.environ.pop(key, None)
+                self._upgrader()
+                settings.save_feed_migration_done(False)
+                self.assertTrue(sw.needs_setup())
+                if answer == "skip":
+                    sw.apply_skip()
+                else:
+                    sw.apply_save({sw.USER_KEY: USER})  # cookie still missing
+                self.assertTrue(settings.feed_migration_done())
+                self.assertFalse(sw.needs_setup())
+
+    def test_a_cancel_does_not_end_the_prompt(self):
+        self._upgrader()
+        self.assertFalse(settings.feed_migration_done())
+        self.assertTrue(sw.needs_setup())
+
+    def test_fresh_install_skip_is_never_reopened(self):
+        os.environ[sw.ARCHIVE_KEY] = str(self.root)
+        self.assertTrue(sw.needs_setup())
+        sw.apply_skip()
+        self.assertFalse(sw.coming_from_feed())
+        self.assertFalse(sw.needs_setup())
+        self.assertEqual(self.settings_json(), {"setup_done": True})
+
+    def test_an_empty_feed_key_is_not_an_upgrader(self):
+        os.environ[sw.FEED_KEY] = "  "
+        os.environ[sw.ARCHIVE_KEY] = str(self.root)
+        settings.save_setup_done(True)
+        self.assertFalse(sw.needs_setup())
+
     def test_setup_done_must_be_a_real_true(self):
         (self.root / "data").mkdir(exist_ok=True)
         (self.root / "data" / "settings.json").write_text('{"setup_done": "yes"}', encoding="utf-8")
@@ -585,6 +645,28 @@ class WindowTest(_Sandbox):
         self.assertNotIn("REDDIT_SAVED_FEED_URL",
                          (self.root / "data" / "config.env").read_text(encoding="utf-8"))
         self.assertTrue(settings.setup_done())
+
+    def _labels(self, win):
+        out = []
+        stack = [win.root]
+        while stack:
+            widget = stack.pop()
+            stack.extend(widget.winfo_children())
+            try:
+                out.append(str(widget.cget("text")))
+            except Exception:
+                pass
+        return out
+
+    def test_feed_notice_shows_for_the_upgrader_only(self):
+        os.environ[sw.ARCHIVE_KEY] = str(self.root)
+        win = self._window()
+        self.assertNotIn(sw.FEED_NOTICE, self._labels(win))   # fresh install
+        win.root.destroy()
+        self.tk_root = _tk_root()
+        os.environ[sw.FEED_KEY] = NeedsSetupTest.FEED
+        win = self._window()
+        self.assertIn(sw.FEED_NOTICE, self._labels(win))      # upgrader
 
     def test_save_with_shortcut_checked_creates_it(self):
         win = self._window()
