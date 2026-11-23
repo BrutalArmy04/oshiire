@@ -322,6 +322,23 @@ Built since the first release:
 Also open: a button to re-run AI tagging on demand (today it runs automatically
 after Ingest and Backfill).
 
+### Known issues
+
+- AI tagging prints nothing while it works and saves only when it finishes, so a
+  long run looks frozen, and stopping it partway loses that run's tagging. Your
+  images and manifest are not affected.
+- After an Ingest that finds nothing new, the page always suggests you may have
+  saved more than about 1,000 posts, even when your saved list is nowhere near
+  full.
+- AI tagging can list the same character twice (for example "Nero Claudius,
+  Nero Claudius").
+- Franchise names that differ only by accents (for example "Pokémon" and
+  "Pokemon") count as different franchises until you add an alias that joins
+  them. Review flags the mismatch with a closest-match suggestion.
+- If Oshiire takes more than about 30 seconds to start (for example while it
+  hashes many newly downloaded images), launching it a second time gives up
+  waiting and says it's already running. Wait for the first window to open.
+
 
 ## For developers
 
