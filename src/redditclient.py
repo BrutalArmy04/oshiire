@@ -8,15 +8,16 @@ TLS/HTTP2 fingerprint -- `curl_cffi` with `impersonate="chrome"` presents a
 real browser's JA3 and HTTP2 settings, and the same cookie then authenticates.
 So the deciding factor is the transport, not the headers.
 
-Three callers fetch old.reddit HTML and all three go through here:
-`ingest.fetch_gallery_images` (gallery permalinks), `backfill.fetch_post_html`
-(the CSV sweep) and `calibrate.fetch_post_html` (the threshold measurement
-run). The `impersonate="chrome"` string lives ONLY in this module -- it is the
+Four callers fetch old.reddit HTML and all of them go through here:
+`savedlisting.fetch_page` (the saved-list walk), `ingest.fetch_gallery_images`
+(gallery permalinks), `backfill.fetch_post_html` (the CSV sweep) and
+`calibrate.fetch_post_html` (the threshold measurement run). The
+`impersonate="chrome"` string lives ONLY in this module -- it is the
 one knob that decides whether any of them see real pages, and it should be
 changed in one place.
 
-This module is NOT the place for anything that isn't walled. The www RSS feed
-and the i.redd.it image downloads work fine on plain `requests`; they stay
+This module is NOT the place for anything that isn't walled. The i.redd.it
+image downloads work fine on plain `requests`; they stay
 there. Impersonation costs a native dependency and gives them nothing.
 
 Deliberately separate from `useragent.py`, which is STDLIB-ONLY by contract so

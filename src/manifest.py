@@ -32,8 +32,9 @@ def display_permalink(url: str) -> str:
     """Rewrite a reddit permalink's host to www.reddit.com, FOR DISPLAY ONLY.
 
     Entries reach the manifest from two pipelines that spell the same URL
-    differently: ingest.py takes the RSS feed's `old.reddit.com` links, while
-    backfill.py builds `www.reddit.com` ones from the CSV export. Only the host
+    differently: entries ingest.py wrote while it read the RSS feed carry
+    `old.reddit.com` links, while backfill.py (and ingest.py since the saved-list
+    walk replaced the feed) builds `www.reddit.com` ones. Only the host
     differs -- the path shape is identical -- so this normalizes what the review
     and resolve screens render, and nothing else.
 

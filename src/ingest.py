@@ -1,4 +1,4 @@
-"""Slice 0: fetch the owner's Reddit saved feed, download images to staging/,
+"""Slice 0: walk the owner's logged-in Reddit saved listing, download images to staging/,
 and record pending_review entries in manifest.json. No AI, no UI, no archiving.
 
 Also owns triage for the `skipped` entries it writes -- posts with no
@@ -18,15 +18,16 @@ import argparse
 import os
 import re
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
-import feedparser
 import requests
 from dotenv import load_dotenv
 
 import redditclient
+import savedlisting
 from manifest import load_manifest, save_manifest
 from tag import run_tagging
 from useragent import (
@@ -37,9 +38,7 @@ from useragent import (
 )
 
 STAGING_DIR = Path("staging")
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
-
-LINK_ANCHOR_RE = re.compile(r'<a href="([^"]+)">\[link\]</a>')
+IMAGE_EXTENSIONS = savedlisting.IMAGE_EXTENSIONS
 
 # Scopes to a gallery-tile div (class order-agnostic via lookaheads, bounded
 # to one tag), captures its data-media-id, then requires the SAME id to
@@ -65,80 +64,6 @@ GALLERY_TILE_RE = re.compile(
 RETRYABLE_SKIP_REASONS = {
     "gallery_post", "gallery_fetch_failed", "gallery_parse_error", "auth_walled",
 }
-
-
-def extract_subreddit(entry, permalink):
-    tags = entry.get("tags")
-    if tags and tags[0].get("term"):
-        return tags[0]["term"].strip()
-    match = re.search(r"/r/([^/]+)/", permalink)
-    return match.group(1) if match else "unknown"
-
-
-def extract_submission_url(entry):
-    content = entry.get("content")
-    html = content[0].get("value", "") if content else entry.get("summary", "")
-    match = LINK_ANCHOR_RE.search(html)
-    return match.group(1) if match else None
-
-
-def classify_entry(entry, permalink):
-    """Returns (kind, reason, image_url). kind is "image", "gallery", or
-    "skip". "gallery" carries no reason/image_url -- the caller must fetch
-    the permalink to find out what's actually in it (see fetch_gallery_images)."""
-    submission_url = extract_submission_url(entry)
-    if not submission_url or submission_url == permalink:
-        return "skip", "text_or_link_post", None
-
-    parsed_url = urlparse(submission_url)
-    if parsed_url.netloc == "v.redd.it":
-        return "skip", "video_post", None
-    if "/gallery/" in submission_url:
-        return "gallery", None, None
-
-    ext = Path(parsed_url.path).suffix.lower()
-    if parsed_url.netloc == "i.redd.it" or ext in IMAGE_EXTENSIONS:
-        return "image", None, submission_url
-
-    return "skip", "unsupported_link_type", None
-
-
-class FeedUnavailable(RuntimeError):
-    """Raised when the saved feed answered 200 with Reddit's login page
-    instead of the feed. That page parses as a feed with zero entries, which
-    ingest would otherwise report as a successful, empty run."""
-
-
-def _normalize_feed_host(feed_url):
-    """old.reddit.com -> www.reddit.com; any other host is returned as-is.
-
-    Path, query and the secret `feed=` token are carried across untouched --
-    only the host is rewritten, because old.reddit stopped serving its
-    logged-out endpoints (this feed included) at the end of July 2026 and
-    answers with a login page instead."""
-    parts = urlsplit(feed_url)
-    if (parts.hostname or "").lower() != "old.reddit.com":
-        return feed_url
-    netloc = "www.reddit.com" + (f":{parts.port}" if parts.port else "")
-    return urlunsplit(parts._replace(netloc=netloc))
-
-
-def fetch_feed(feed_url):
-    resp = requests.get(
-        _normalize_feed_host(feed_url),
-        headers={"User-Agent": build_user_agent()},
-        timeout=15,
-    )
-    resp.raise_for_status()
-    if is_login_wall(resp.url, resp.text):
-        raise FeedUnavailable(
-            "The saved feed returned Reddit's login wall instead of your saves. "
-            "Check that REDDIT_SAVED_FEED_URL uses the www.reddit.com host -- "
-            "old.reddit.com now requires login for logged-out requests. If it "
-            "already does, the feed token is no longer valid; re-copy it from "
-            "reddit.com/prefs/feeds/."
-        )
-    return feedparser.parse(resp.content)
 
 
 def download_image(url, dest_path):
@@ -411,9 +336,179 @@ def retry_skipped(manifest, keys) -> None:
         )
 
 
+# --------------------------------------------------------------------------- #
+# The saved-listing walk
+# --------------------------------------------------------------------------- #
+PAGE_DELAY_S = 3
+MAX_PAGES = 45
+RATE_LIMIT_BACKOFF = [30, 60, 120, 240]  # seconds, as backfill's
+
+COOKIE_FIX = (
+    "Copy a fresh login cookie into REDDIT_SESSION_COOKIE (Settings -> App -> "
+    "setup window), then run ingest again."
+)
+
+
+def known_post_ids(manifest):
+    """Every post_id FIELD in the manifest -- not the dict keys, since a gallery
+    post's per-image entries are keyed `<post_id>_N` under one shared post_id."""
+    return {entry.get("post_id") for entry in manifest.values()} - {None}
+
+
+def _stub(row, fetched_at, **fields):
+    entry = {
+        "post_id": row["post_id"],
+        "title": row["title"],
+        "subreddit": row["subreddit"],
+        "permalink": row["permalink"],
+        **fields,
+        "fetched_at": fetched_at,
+    }
+    if row["crosspost_root_subreddit"]:
+        entry["crosspost_root_subreddit"] = row["crosspost_root_subreddit"]
+    return entry
+
+
+def _ingest_gallery(manifest, row, fetched_at, counts, state):
+    post_id = row["post_id"]
+    try:
+        images = fetch_gallery_images(row["permalink"])
+    except redditclient.RedditFetchError as exc:
+        print(f"gallery fetch failed for {post_id}: {exc}", file=sys.stderr)
+        manifest[post_id] = _stub(row, fetched_at, status="skipped",
+                                  skip_reason="gallery_fetch_failed")
+        counts["failed"] += 1
+        return
+    except RedditAuthWall as exc:
+        print(f"gallery fetch hit the login wall for {post_id}: {exc}", file=sys.stderr)
+        if not state["auth_wall_warned"]:
+            print(
+                "warning: gallery posts need a logged-in session. " + COOKIE_FIX
+                + " Then run `python src/ingest.py --retry-skipped` to pick these up. "
+                "Single-image posts are unaffected and keep ingesting.",
+                file=sys.stderr,
+            )
+            state["auth_wall_warned"] = True
+        manifest[post_id] = _stub(row, fetched_at, status="skipped",
+                                  skip_reason="auth_walled")
+        counts["failed"] += 1
+        return
+    except GalleryParseError as exc:
+        print(f"gallery parse error for {post_id}: {exc}", file=sys.stderr)
+        manifest[post_id] = _stub(row, fetched_at, status="skipped",
+                                  skip_reason="gallery_parse_error")
+        counts["failed"] += 1
+        return
+
+    if not images:
+        manifest[post_id] = _stub(row, fetched_at, status="skipped",
+                                  skip_reason="gallery_no_images")
+        counts["skipped"] += 1
+        return
+
+    gallery_entries = _build_gallery_entries(
+        post_id, row["title"], row["subreddit"], row["permalink"], fetched_at, images
+    )
+    if row["crosspost_root_subreddit"]:
+        for entry in gallery_entries.values():
+            entry["crosspost_root_subreddit"] = row["crosspost_root_subreddit"]
+    manifest.update(gallery_entries)
+    counts["downloaded"] += sum(
+        1 for e in gallery_entries.values() if e["status"] == "pending_review"
+    )
+    counts["failed"] += sum(
+        1 for e in gallery_entries.values() if e["status"] == "download_failed"
+    )
+
+
+def ingest_row(manifest, row, counts, state):
+    """File one listing row into the manifest: download it, expand it, or record
+    why it was skipped. Anything unexpected becomes an `error` entry rather than
+    stopping the walk."""
+    post_id = row["post_id"]
+    fetched_at = datetime.now(timezone.utc).isoformat()
+    try:
+        kind, reason, image_url = savedlisting.classify_row(row)
+
+        if kind == "skip":
+            manifest[post_id] = _stub(row, fetched_at, status="skipped", skip_reason=reason)
+            counts["skipped"] += 1
+        elif kind == "gallery":
+            _ingest_gallery(manifest, row, fetched_at, counts, state)
+        else:
+            ext = Path(urlparse(image_url).path).suffix or ".jpg"
+            local_path = STAGING_DIR / f"{post_id}{ext}"
+            try:
+                download_image(image_url, local_path)
+            except requests.RequestException as exc:
+                manifest[post_id] = _stub(row, fetched_at, status="download_failed",
+                                          reason=str(exc))
+                counts["failed"] += 1
+            else:
+                manifest[post_id] = _stub(row, fetched_at, image_url=image_url,
+                                          local_path=str(local_path),
+                                          status="pending_review")
+                counts["downloaded"] += 1
+    except Exception as exc:
+        manifest[post_id] = {
+            "post_id": post_id,
+            "status": "error",
+            "reason": str(exc),
+            "fetched_at": fetched_at,
+        }
+        counts["failed"] += 1
+
+
+def _fetch_with_backoff(url):
+    """One listing page, retrying a 429 or a network error on the same 30/60/120/
+    240s schedule backfill uses. Auth failures are never retried."""
+    for attempt in range(len(RATE_LIMIT_BACKOFF) + 1):
+        try:
+            return savedlisting.fetch_page(url)
+        except (savedlisting.SavedRateLimited, redditclient.RedditFetchError) as exc:
+            if attempt == len(RATE_LIMIT_BACKOFF):
+                raise savedlisting.SavedRateLimited(str(exc)) from exc
+            wait = RATE_LIMIT_BACKOFF[attempt]
+            print(f"listing fetch failed ({exc}); waiting {wait}s "
+                  f"(attempt {attempt + 1}/{len(RATE_LIMIT_BACKOFF)})", file=sys.stderr)
+            time.sleep(wait)
+
+
+def walk_saved(manifest, username, counts):
+    """Walk the saved listing newest-first, filing every unknown post.
+
+    Stops at the first page with NO unknown post_id (everything past it was seen
+    on an earlier run), at the last page, or at MAX_PAGES. The manifest is saved
+    after each page that added something, so a crash or a refusal mid-walk keeps
+    the pages already done. Auth/rate-limit/listing errors propagate to the
+    caller AFTER those saves; `counts["pages"]` is the pages fetched so far."""
+    known = known_post_ids(manifest)
+    state = {"auth_wall_warned": False}
+    url = savedlisting.listing_url(username)
+    while url and counts["pages"] < MAX_PAGES:
+        if counts["pages"]:
+            time.sleep(PAGE_DELAY_S)
+        rows, next_url = _fetch_with_backoff(url)
+        counts["pages"] += 1
+
+        fresh = [row for row in rows if row["post_id"] not in known]
+        if not fresh:
+            return
+        for row in fresh:
+            if row["post_id"] in known:
+                continue
+            known.add(row["post_id"])
+            ingest_row(manifest, row, counts, state)
+        save_manifest(manifest)
+        url = next_url
+    if url:
+        print(f"stopped at the {MAX_PAGES}-page limit; run ingest again to continue "
+              "further back.", file=sys.stderr)
+
+
 def _parse_args():
     parser = argparse.ArgumentParser(
-        description="Fetch the saved feed and download new images. "
+        description="Walk your logged-in saved listing and download new images. "
                     "Also triages the `skipped` entries ingest records."
     )
     parser.add_argument("--list-skipped", action="store_true",
@@ -433,9 +528,9 @@ def main():
     # permalinks, and that fetch now needs REDDIT_SESSION_COOKIE out of .env.
     load_dotenv()
 
-    # Triage modes read/write only the manifest -- no feed URL, no network
-    # (beyond --retry-skipped's own gallery fetch), so they work even when the
-    # feed is unreachable or unconfigured.
+    # Triage modes read/write only the manifest -- no listing walk, so they work
+    # even when the login cookie is missing or expired (--retry-skipped makes its
+    # own gallery fetches).
     if args.list_skipped:
         list_skipped(load_manifest())
         return
@@ -446,11 +541,16 @@ def main():
         retry_skipped(load_manifest(), args.retry_skipped)
         return
 
-    feed_url = os.environ.get("REDDIT_SAVED_FEED_URL")
-    if not feed_url:
+    username = os.environ.get("REDDIT_USERNAME", "").strip()
+    cookie = os.environ.get("REDDIT_SESSION_COOKIE", "").strip()
+    if not username or not cookie:
+        missing = " and ".join(
+            name for name, value in (("REDDIT_USERNAME", username),
+                                     ("REDDIT_SESSION_COOKIE", cookie)) if not value
+        )
         print(
-            "REDDIT_SAVED_FEED_URL is not set in .env. Copy examples/.env.example to .env, "
-            "then set it to your saved-posts feed URL (old.reddit.com/prefs/feeds).",
+            f"{missing} not set. Ingest reads your logged-in saved listing, so it needs "
+            "your Reddit username and login cookie (Settings -> App -> setup window).",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -458,166 +558,24 @@ def main():
     manifest = load_manifest()
     STAGING_DIR.mkdir(parents=True, exist_ok=True)
 
+    counts = {"downloaded": 0, "skipped": 0, "failed": 0, "pages": 0}
+    failure = None
     try:
-        parsed = fetch_feed(feed_url)
-    except FeedUnavailable as exc:
-        print(exc, file=sys.stderr)
+        walk_saved(manifest, username, counts)
+    except savedlisting.SavedAuthError as exc:
+        failure = f"{savedlisting.auth_message(exc, username)} {COOKIE_FIX}"
+    except savedlisting.SavedRateLimited as exc:
+        failure = (f"Rate limited, try later: Reddit would not serve the saved listing "
+                   f"({exc}). What was fetched so far is saved.")
+    except savedlisting.SavedListingError as exc:
+        failure = f"Stopped: {exc}. What was fetched so far is saved."
+
+    if failure:
+        save_manifest(manifest)
+        print(failure, file=sys.stderr)
+        print(f"downloaded={counts['downloaded']} skipped={counts['skipped']} "
+              f"failed={counts['failed']} pages={counts['pages']}")
         sys.exit(1)
-    except requests.RequestException as exc:
-        print(f"Failed to fetch saved feed: {exc}", file=sys.stderr)
-        sys.exit(1)
-
-    # Post-level dedup keyed on the post_id FIELD (not the dict key), since a
-    # gallery post now stores its bare parent id in every one of its N
-    # per-image entries' post_id field while its dict keys are suffixed
-    # "<post_id>_1", "<post_id>_2", ... -- this is a strict generalization of
-    # today's behavior, where key == post_id always.
-    known_post_ids = {entry.get("post_id") for entry in manifest.values()}
-
-    downloaded = skipped = failed = 0
-    auth_wall_warned = False
-
-    for entry in parsed.entries:
-        post_id = entry.get("id")
-        if not post_id or post_id in known_post_ids:
-            continue
-        known_post_ids.add(post_id)
-
-        fetched_at = datetime.now(timezone.utc).isoformat()
-        try:
-            permalink = entry.get("link", "")
-            title = entry.get("title", "")
-            subreddit = extract_subreddit(entry, permalink)
-            kind, reason, image_url = classify_entry(entry, permalink)
-
-            if kind == "skip":
-                manifest[post_id] = {
-                    "post_id": post_id,
-                    "title": title,
-                    "subreddit": subreddit,
-                    "permalink": permalink,
-                    "status": "skipped",
-                    "skip_reason": reason,
-                    "fetched_at": fetched_at,
-                }
-                skipped += 1
-                continue
-
-            if kind == "gallery":
-                try:
-                    images = fetch_gallery_images(permalink)
-                except redditclient.RedditFetchError as exc:
-                    print(f"gallery fetch failed for {post_id}: {exc}", file=sys.stderr)
-                    manifest[post_id] = {
-                        "post_id": post_id,
-                        "title": title,
-                        "subreddit": subreddit,
-                        "permalink": permalink,
-                        "status": "skipped",
-                        "skip_reason": "gallery_fetch_failed",
-                        "fetched_at": fetched_at,
-                    }
-                    failed += 1
-                    continue
-                except RedditAuthWall as exc:
-                    print(f"gallery fetch hit the login wall for {post_id}: {exc}",
-                          file=sys.stderr)
-                    if not auth_wall_warned:
-                        print(
-                            "warning: gallery posts need a logged-in session. Set "
-                            "REDDIT_SESSION_COOKIE in .env (see examples/.env.example), then run "
-                            "`python src/ingest.py --retry-skipped` to pick these up. "
-                            "Single-image posts are unaffected and keep ingesting.",
-                            file=sys.stderr,
-                        )
-                        auth_wall_warned = True
-                    manifest[post_id] = {
-                        "post_id": post_id,
-                        "title": title,
-                        "subreddit": subreddit,
-                        "permalink": permalink,
-                        "status": "skipped",
-                        "skip_reason": "auth_walled",
-                        "fetched_at": fetched_at,
-                    }
-                    failed += 1
-                    continue
-                except GalleryParseError as exc:
-                    print(f"gallery parse error for {post_id}: {exc}", file=sys.stderr)
-                    manifest[post_id] = {
-                        "post_id": post_id,
-                        "title": title,
-                        "subreddit": subreddit,
-                        "permalink": permalink,
-                        "status": "skipped",
-                        "skip_reason": "gallery_parse_error",
-                        "fetched_at": fetched_at,
-                    }
-                    failed += 1
-                    continue
-
-                if not images:
-                    manifest[post_id] = {
-                        "post_id": post_id,
-                        "title": title,
-                        "subreddit": subreddit,
-                        "permalink": permalink,
-                        "status": "skipped",
-                        "skip_reason": "gallery_no_images",
-                        "fetched_at": fetched_at,
-                    }
-                    skipped += 1
-                    continue
-
-                gallery_entries = _build_gallery_entries(
-                    post_id, title, subreddit, permalink, fetched_at, images
-                )
-                manifest.update(gallery_entries)
-                downloaded += sum(
-                    1 for e in gallery_entries.values() if e["status"] == "pending_review"
-                )
-                failed += sum(
-                    1 for e in gallery_entries.values() if e["status"] == "download_failed"
-                )
-                continue
-
-            ext = Path(urlparse(image_url).path).suffix or ".jpg"
-            local_path = STAGING_DIR / f"{post_id}{ext}"
-            try:
-                download_image(image_url, local_path)
-            except requests.RequestException as exc:
-                manifest[post_id] = {
-                    "post_id": post_id,
-                    "title": title,
-                    "subreddit": subreddit,
-                    "permalink": permalink,
-                    "status": "download_failed",
-                    "reason": str(exc),
-                    "fetched_at": fetched_at,
-                }
-                failed += 1
-                continue
-
-            manifest[post_id] = {
-                "post_id": post_id,
-                "title": title,
-                "subreddit": subreddit,
-                "permalink": permalink,
-                "image_url": image_url,
-                "local_path": str(local_path),
-                "status": "pending_review",
-                "fetched_at": fetched_at,
-            }
-            downloaded += 1
-
-        except Exception as exc:
-            manifest[post_id] = {
-                "post_id": post_id,
-                "status": "error",
-                "reason": str(exc),
-                "fetched_at": fetched_at,
-            }
-            failed += 1
 
     retry_counts = retry_skipped_galleries(manifest)
 
@@ -625,7 +583,8 @@ def main():
 
     save_manifest(manifest)
     print(
-        f"downloaded={downloaded} skipped={skipped} failed={failed} tagged={len(tagged)} "
+        f"downloaded={counts['downloaded']} skipped={counts['skipped']} "
+        f"failed={counts['failed']} tagged={len(tagged)} pages={counts['pages']} "
         f"gallery_retried={retry_counts['retried']} gallery_expanded={retry_counts['expanded']}"
     )
 

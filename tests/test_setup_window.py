@@ -1,6 +1,6 @@
 """Tests for setup_window.py -- the first-run / "Change setup" window.
 
-The logic (validators, needs_setup, the feed test, the shortcut builders,
+The logic (validators, needs_setup, the login test, the shortcut builders,
 Save/Skip/Cancel) is tested without a display. The window itself is driven
 programmatically and skipped cleanly when Tk can't open one. Nothing here
 creates a real Start-menu entry, .desktop file or shortcut, and no test reads
@@ -29,66 +29,56 @@ import datahome
 import settings
 import setup_window as sw
 from config_sandbox import isolated_config
+from listing_fixture import FakeResponse, forbidden, page, thing
 
-TOKEN = "a1b2c3d4e5f6SECRETTOKEN"
-GOOD = f"https://old.reddit.com/saved.rss?feed={TOKEN}&user=some_user"
+SESSION = "SECRETSESSIONVALUE123"
+COOKIE = f"reddit_session={SESSION}; over18=1"
+USER = "some_user"
 
 
-class FeedValidatorTest(unittest.TestCase):
-    def _check(self, text, ok, message=None):
-        result = sw.validate_feed_url(text)
-        self.assertEqual(result[0], ok, (text, result[2]))
-        if message is not None:
-            self.assertEqual(result[2], message)
-        # Never echo the link or its token.
-        self.assertNotIn(TOKEN, result[2])
-        self.assertNotIn("saved.rss?", result[2])
-        return result
+class UsernameValidatorTest(unittest.TestCase):
+    def test_accepted_spellings_give_the_bare_name(self):
+        for text in ("some_user", "  some_user ", "u/some_user", "/user/some_user/", "/u/some_user"):
+            with self.subTest(text=text):
+                self.assertEqual(sw.clean_username(text), (True, "some_user", ""))
 
-    def test_host_rewrite_for_every_reddit_host(self):
-        for host in ("old.reddit.com", "www.reddit.com", "reddit.com", "OLD.Reddit.com"):
-            ok, normalized, _ = self._check(
-                f"https://{host}/saved.rss?feed={TOKEN}&user=some_user", True, sw.MSG_FEED_OK)
-            self.assertEqual(normalized,
-                             f"https://www.reddit.com/saved.rss?feed={TOKEN}&user=some_user")
+    def test_empty_and_bad_names(self):
+        self.assertEqual(sw.clean_username("")[::2], (False, sw.HINT_USER_EMPTY))
+        self.assertEqual(sw.clean_username("   ")[::2], (False, sw.HINT_USER_EMPTY))
+        for text in ("ab", "x" * 21, "has space", "https://www.reddit.com/user/me/", "a@b.c"):
+            with self.subTest(text=text):
+                self.assertEqual(sw.clean_username(text)[::2], (False, sw.HINT_USER_BAD))
 
-    def test_param_order_and_extras_kept_as_pasted(self):
-        ok, normalized, _ = self._check(
-            f"  https://www.reddit.com/saved.rss/?user=me_too&feed={TOKEN}&limit=100#top  ", True)
-        self.assertEqual(normalized,
-                         f"https://www.reddit.com/saved.rss?user=me_too&feed={TOKEN}&limit=100")
 
-    def test_surrounding_quotes_are_ignored(self):
-        self._check(f'"{GOOD}"', True)
+class CookieValidatorTest(unittest.TestCase):
+    def test_plain_value_is_kept_as_pasted(self):
+        self.assertEqual(sw.clean_cookie(COOKIE), (True, COOKIE, ""))
 
-    def test_each_hint(self):
+    def test_cookie_prefix_and_quotes_are_stripped(self):
+        for text in (f"Cookie: {COOKIE}", f"cookie:{COOKIE}", f'"{COOKIE}"', f"'{COOKIE}'",
+                     f'  "Cookie: {COOKIE}"  ', f"COOKIE :   {COOKIE}\n"):
+            with self.subTest(text=text):
+                self.assertEqual(sw.clean_cookie(text), (True, COOKIE, ""))
+
+    def test_session_cookie_may_come_anywhere_in_the_string(self):
+        value = f"loid=abc; reddit_session={SESSION}; token_v2=zzz"
+        self.assertEqual(sw.clean_cookie(value), (True, value, ""))
+
+    def test_rejections_never_echo_the_value(self):
         cases = [
-            ("", sw.HINT_EMPTY),
-            ("   ", sw.HINT_EMPTY),
-            ("some_user", sw.HINT_USERNAME),
-            ("u/some_user", sw.HINT_USERNAME),
-            ("/u/some_user/", sw.HINT_USERNAME),
-            (GOOD.replace("https://", "http://"), sw.HINT_SCHEME),
-            (GOOD.replace("https://", ""), sw.HINT_SCHEME),
-            (GOOD.replace("old.reddit.com", "reddit.example.com"), sw.HINT_HOST),
-            ("https://old.reddit.com/prefs/feeds/", sw.HINT_FEEDS_PAGE),
-            ("https://www.reddit.com/prefs/feeds", sw.HINT_FEEDS_PAGE),
-            ("https://www.reddit.com/user/some_user/saved/", sw.HINT_USER_PAGE),
-            ("https://old.reddit.com/u/some_user", sw.HINT_USER_PAGE),
-            (f"https://www.reddit.com/.rss?feed={TOKEN}&user=x", sw.HINT_OTHER_FEED),
-            (f"https://www.reddit.com/saved.json?feed={TOKEN}&user=x", sw.HINT_OTHER_FEED),
-            (f"https://www.reddit.com/saved.rss?feed={TOKEN}", sw.HINT_PARAMS),
-            ("https://www.reddit.com/saved.rss?user=x", sw.HINT_PARAMS),
-            ("https://www.reddit.com/saved.rss?feed=&user=x", sw.HINT_PARAMS),
+            ("", sw.HINT_COOKIE_EMPTY),
+            ("   ", sw.HINT_COOKIE_EMPTY),
+            ("Cookie:", sw.HINT_COOKIE_EMPTY),
+            ("over18=1; loid=SECRETOTHERVALUE", sw.HINT_COOKIE_BAD),
+            ("reddit_session=", sw.HINT_COOKIE_BAD),
+            ("xreddit_session=SECRETOTHERVALUE", sw.HINT_COOKIE_BAD),
+            (f"{COOKIE}\nsecond=line", sw.HINT_COOKIE_LINES),
         ]
         for text, hint in cases:
-            with self.subTest(text=text):
-                ok, normalized, message = self._check(text, False, hint)
-                self.assertEqual(normalized, "")
-
-    def test_user_param_prefills_the_username(self):
-        self.assertEqual(sw.feed_user(GOOD), "some_user")
-        self.assertEqual(sw.feed_user(f"https://www.reddit.com/saved.rss?feed={TOKEN}"), "")
+            with self.subTest(text=text[:20]):
+                ok, cookie, message = sw.clean_cookie(text)
+                self.assertEqual((ok, cookie, message), (False, "", hint))
+                self.assertNotIn("SECRET", message)
 
 
 class ArchiveValidatorTest(unittest.TestCase):
@@ -186,20 +176,30 @@ class _Sandbox(unittest.TestCase):
 
 
 class NeedsSetupTest(_Sandbox):
+    def test_required_keys(self):
+        self.assertEqual(set(sw.REQUIRED_KEYS),
+                         {"ARCHIVE_DIR", "REDDIT_USERNAME", "REDDIT_SESSION_COOKIE"})
+
     def test_truth_table(self):
-        for feed in (False, True):
-            for archive in (False, True):
-                for done in (False, True):
-                    with self.subTest(feed=feed, archive=archive, done=done):
-                        for key in sw.REQUIRED_KEYS:
-                            os.environ.pop(key, None)
-                        if feed:
-                            os.environ[sw.FEED_KEY] = GOOD
-                        if archive:
-                            os.environ[sw.ARCHIVE_KEY] = str(self.root)
-                        settings.save_setup_done(done)
-                        expected = (not (feed and archive)) and not done
-                        self.assertEqual(sw.needs_setup(), expected)
+        import itertools
+        for user, cookie, archive, done in itertools.product((False, True), repeat=4):
+            with self.subTest(user=user, cookie=cookie, archive=archive, done=done):
+                for key in sw.REQUIRED_KEYS:
+                    os.environ.pop(key, None)
+                if user:
+                    os.environ[sw.USER_KEY] = USER
+                if cookie:
+                    os.environ[sw.COOKIE_KEY] = COOKIE
+                if archive:
+                    os.environ[sw.ARCHIVE_KEY] = str(self.root)
+                settings.save_setup_done(done)
+                expected = (not (user and cookie and archive)) and not done
+                self.assertEqual(sw.needs_setup(), expected)
+
+    def test_the_old_feed_url_no_longer_satisfies_setup(self):
+        os.environ["REDDIT_SAVED_FEED_URL"] = "https://www.reddit.com/saved.rss?feed=x&user=y"
+        os.environ[sw.ARCHIVE_KEY] = str(self.root)
+        self.assertTrue(sw.needs_setup())
 
     def test_setup_done_must_be_a_real_true(self):
         (self.root / "data").mkdir(exist_ok=True)
@@ -207,7 +207,8 @@ class NeedsSetupTest(_Sandbox):
         self.assertTrue(sw.needs_setup())
 
     def test_values_from_config_env_count(self):
-        config.save_setup({sw.FEED_KEY: GOOD, sw.ARCHIVE_KEY: str(self.root)})
+        config.save_setup({sw.USER_KEY: USER, sw.COOKIE_KEY: COOKIE,
+                           sw.ARCHIVE_KEY: str(self.root)})
         self.assertFalse(sw.needs_setup())
 
     def test_setup_done_setter_keeps_other_settings(self):
@@ -222,8 +223,8 @@ class NeedsSetupTest(_Sandbox):
 class SaveSkipLogicTest(_Sandbox):
     def test_apply_save_writes_only_editable_keys(self):
         (self.root / ".env").write_text(f"{sw.ARCHIVE_KEY}=D:/from-dotenv\n", encoding="utf-8")
-        written = sw.apply_save({sw.FEED_KEY: GOOD, sw.ARCHIVE_KEY: "E:/typed", sw.USER_KEY: "me"})
-        self.assertEqual(set(written), {sw.FEED_KEY, sw.USER_KEY})
+        written = sw.apply_save({sw.COOKIE_KEY: COOKIE, sw.ARCHIVE_KEY: "E:/typed", sw.USER_KEY: "me"})
+        self.assertEqual(set(written), {sw.COOKIE_KEY, sw.USER_KEY})
         raw = (self.root / "data" / "config.env").read_text(encoding="utf-8")
         self.assertNotIn(sw.ARCHIVE_KEY, raw)
         self.assertEqual(config.get(sw.ARCHIVE_KEY), "D:/from-dotenv")
@@ -236,60 +237,94 @@ class SaveSkipLogicTest(_Sandbox):
         self.assertEqual(self.settings_json(), {"setup_done": True})
 
 
-class FeedTestTest(unittest.TestCase):
-    """test_feed goes through ingest.fetch_feed and never shows the link."""
+class LoginTestTest(unittest.TestCase):
+    """test_login makes ONE saved-listing fetch with the typed cookie and never
+    shows the cookie."""
 
-    def _run(self, effect=None, result=None):
-        import ingest
-        with mock.patch.object(ingest, "fetch_feed", side_effect=effect,
+    def _run(self, effect=None, result=None, username=USER, cookie=COOKIE):
+        import savedlisting
+        with mock.patch.object(savedlisting, "fetch_page", side_effect=effect,
                                return_value=result) as fetch:
-            ok, message = sw.test_feed(GOOD)
-        self.assertNotIn(TOKEN, message)
-        self.assertNotIn("reddit.com", message)
+            ok, message = sw.test_login(username, cookie)
+        self.assertNotIn(SESSION, message)
+        self.assertNotIn("reddit_session", message)
         return ok, message, fetch
 
-    def test_found_posts_and_uses_the_normalized_link(self):
-        feed = mock.Mock(entries=[1, 2, 3], bozo=False)
-        ok, message, fetch = self._run(result=feed)
-        self.assertEqual((ok, message), (True, "Found 3 saved posts. The link works."))
-        fetch.assert_called_once_with(GOOD.replace("old.reddit.com", "www.reddit.com"))
+    def test_logged_in_does_not_read_as_a_total(self):
+        """Page 1 only is fetched, so the message must not state a number of saves."""
+        ok, message, fetch = self._run(result=([{}, {}, {}], None))
+        self.assertEqual((ok, message), (True, "Logged in. Your saved list loads."))
+        self.assertFalse(any(ch.isdigit() for ch in message))
+        fetch.assert_called_once_with("https://old.reddit.com/user/some_user/saved/", cookie=COOKIE)
 
-    def test_singular(self):
-        ok, message, _ = self._run(result=mock.Mock(entries=[1], bozo=False))
-        self.assertEqual(message, "Found 1 saved post. The link works.")
+    def test_an_empty_saved_list_is_still_logged_in(self):
+        self.assertEqual(self._run(result=([], None))[1], "Logged in. Your saved list loads.")
 
-    def test_reasons(self):
-        import ingest
-        import requests
-        refused = requests.HTTPError(f"403 for url {GOOD}")
-        refused.response = mock.Mock(status_code=403)
-        busy = requests.HTTPError(f"503 for url {GOOD}")
-        busy.response = mock.Mock(status_code=503)
+    def test_the_cookie_is_cleaned_before_it_is_used(self):
+        _, _, fetch = self._run(result=([], None), cookie=f'"Cookie: {COOKIE}"')
+        self.assertEqual(fetch.call_args.kwargs["cookie"], COOKIE)
+
+    def test_expired_cookie(self):
+        import savedlisting
+        ok, message, _ = self._run(effect=savedlisting.SavedAuthError("403"))
+        self.assertFalse(ok)
+        self.assertIn("cookie has expired or is wrong", message)
+        self.assertIn("Copy the cookie again", message)
+
+    def test_login_for_a_different_account(self):
+        import savedlisting
+        ok, message, _ = self._run(
+            effect=savedlisting.SavedAuthError("403", logged_in=True, account="Someone_Else"))
+        self.assertFalse(ok)
+        self.assertIn(f"different account than {USER}", message)
+        self.assertIn("Someone_Else", message)
+
+    def test_other_reasons(self):
+        import redditclient
+        import savedlisting
         cases = [
-            (ingest.FeedUnavailable("wall"), sw.MSG_TEST_WALL),
-            (refused, sw.MSG_TEST_REFUSED),
-            (requests.Timeout(f"timed out {GOOD}"), sw.MSG_TEST_TIMEOUT),
-            (requests.ConnectionError(f"no route {GOOD}"), sw.MSG_TEST_OFFLINE),
-            (RuntimeError(f"weird {GOOD}"), "The test failed (RuntimeError)."),
+            (savedlisting.SavedRateLimited("429"), sw.MSG_TEST_BUSY),
+            (redditclient.RedditFetchError("t", kind="ReadTimeout"), sw.MSG_TEST_TIMEOUT),
+            (redditclient.RedditFetchError("x", kind="ConnectionError"), sw.MSG_TEST_OFFLINE),
+            (RuntimeError(f"weird {COOKIE}"), "The test failed (RuntimeError)."),
         ]
         for exc, expected in cases:
             with self.subTest(exc=type(exc).__name__):
                 ok, message, _ = self._run(effect=exc)
+                self.assertEqual((ok, message), (False, expected))
+
+    def test_bad_input_is_never_fetched(self):
+        import savedlisting
+        for username, cookie, hint in (("", COOKIE, sw.HINT_USER_EMPTY),
+                                       (USER, "nope", sw.HINT_COOKIE_BAD),
+                                       (USER, "", sw.HINT_COOKIE_EMPTY)):
+            with self.subTest(username=username, cookie=cookie):
+                with mock.patch.object(savedlisting, "fetch_page") as fetch:
+                    self.assertEqual(sw.test_login(username, cookie), (False, hint))
+                fetch.assert_not_called()
+
+    def test_end_to_end_through_the_transport_with_a_403(self):
+        """Real fetch_page + auth_message, only the HTTP layer mocked: a 403 with
+        the logout marker is the wrong account, without it an expired cookie."""
+        import redditclient
+        for body, expect in ((forbidden(logged_in=True, account="Other"), "different account"),
+                             (forbidden(logged_in=False), "expired")):
+            with self.subTest(expect=expect):
+                with mock.patch.object(redditclient, "get",
+                                       return_value=FakeResponse(body, 403)) as get:
+                    ok, message = sw.test_login(USER, COOKIE)
                 self.assertFalse(ok)
-                self.assertEqual(message, expected)
-        ok, message, _ = self._run(effect=busy)
-        self.assertIn("error 503", message)
+                self.assertIn(expect, message)
+                self.assertEqual(get.call_count, 1)             # exactly ONE fetch
+                self.assertIn(SESSION, get.call_args.kwargs["headers"]["Cookie"])
+                self.assertNotIn(SESSION, message)
 
-    def test_not_a_feed(self):
-        ok, message, _ = self._run(result=mock.Mock(entries=[], bozo=True))
-        self.assertEqual((ok, message), (False, sw.MSG_TEST_NOT_FEED))
-
-    def test_invalid_link_is_never_fetched(self):
-        import ingest
-        with mock.patch.object(ingest, "fetch_feed") as fetch:
-            ok, message = sw.test_feed("https://old.reddit.com/prefs/feeds/")
-        fetch.assert_not_called()
-        self.assertEqual((ok, message), (False, sw.HINT_FEEDS_PAGE))
+    def test_end_to_end_good_page(self):
+        import redditclient
+        html = page([thing("t3_a", "https://i.redd.it/a.jpg", "i.redd.it"),
+                     thing("t3_b", "https://i.redd.it/b.jpg", "i.redd.it")])
+        with mock.patch.object(redditclient, "get", return_value=FakeResponse(html)):
+            self.assertEqual(sw.test_login(USER, COOKIE), (True, "Logged in. Your saved list loads."))
 
 
 class ShortcutBuilderTest(unittest.TestCase):
@@ -502,7 +537,6 @@ class CookieDocsLinkTest(unittest.TestCase):
         self.assertEqual(sw.COOKIE_DOCS_URL,
                          f"{sw.GITHUB_REPO_URL}/blob/main/docs/SETUP.md#{sw.COOKIE_DOCS_ANCHOR}")
         self.assertIn(sw.COOKIE_DOCS_ANCHOR, anchors(REPO / "docs" / "SETUP.md"))
-        self.assertNotIn("docs/SETUP.md", sw.COOKIE_LINE)
 
 
 def _tk_root():
@@ -538,50 +572,99 @@ class WindowTest(_Sandbox):
         self.addCleanup(shutil.rmtree, archive, True)
         win = self._window()
         win.shortcut_var.set(False)
-        win.feed_var.set(GOOD)
+        win.user_var.set(f"u/{USER}")
+        win.cookie_var.set(f"Cookie: {COOKIE}")
         win.archive_var.set(str(archive))
-        self.assertEqual(win.user_var.get(), "some_user")  # pre-filled from user=
         with mock.patch.object(sw, "create_shortcut") as shortcut:
             self.assertTrue(win.save())
         shortcut.assert_not_called()
         self.assertEqual(win.result, sw.RESULT_SAVED)
-        self.assertEqual(config.get(sw.FEED_KEY), GOOD.replace("old.reddit.com", "www.reddit.com"))
+        self.assertEqual(config.get(sw.COOKIE_KEY), COOKIE)   # prefix stripped
         self.assertEqual(config.get(sw.ARCHIVE_KEY), str(archive))
-        self.assertEqual(config.get(sw.USER_KEY), "some_user")
+        self.assertEqual(config.get(sw.USER_KEY), USER)
+        self.assertNotIn("REDDIT_SAVED_FEED_URL",
+                         (self.root / "data" / "config.env").read_text(encoding="utf-8"))
         self.assertTrue(settings.setup_done())
 
     def test_save_with_shortcut_checked_creates_it(self):
         win = self._window()
+        win.user_var.set(USER)
+        win.cookie_var.set(COOKIE)
         win.shortcut_var.set(True)
         with mock.patch.object(sw, "create_shortcut", return_value=(True, "ok")) as shortcut, \
              contextlib.redirect_stdout(io.StringIO()):
             win.save()
         self.assertEqual(shortcut.call_count, 1 if sw.shortcut_supported() else 0)
 
-    def test_save_refuses_a_bad_link_and_writes_nothing(self):
+    def test_save_refuses_a_bad_cookie_and_writes_nothing(self):
         win = self._window()
-        win.feed_var.set("https://old.reddit.com/prefs/feeds/")
+        win.user_var.set(USER)
+        win.cookie_var.set("loid=SECRETOTHERVALUE; over18=1")
         self.assertFalse(win.save())
-        self.assertEqual(win.feed_msg.cget("text"), sw.HINT_FEEDS_PAGE)
+        self.assertEqual(win.cookie_msg.cget("text"), sw.HINT_COOKIE_BAD)
         self.assertEqual(self.files(), [])
         self.assertNotEqual(win.result, sw.RESULT_SAVED)
+
+    def test_username_and_cookie_are_required(self):
+        win = self._window()
+        self.assertFalse(win.save())
+        self.assertEqual(win.user_msg.cget("text"), sw.HINT_USER_EMPTY)
+        self.assertEqual(win.cookie_msg.cget("text"), sw.HINT_COOKIE_EMPTY)
+        self.assertEqual(self.files(), [])
+        win.user_var.set("ab")
+        self.assertFalse(win.save())
+        self.assertEqual(win.user_msg.cget("text"), sw.HINT_USER_BAD)
+
+    def test_cookie_round_trips_through_config_env(self):
+        win = self._window()
+        win.user_var.set(USER)
+        win.cookie_var.set(COOKIE)
+        self.assertTrue(win.save())
+        self.assertEqual(config.get(sw.COOKIE_KEY), COOKIE)
+        self.assertIn(SESSION, config.secret_values())
+
+    def test_test_button_runs_the_login_test_with_what_is_typed(self):
+        win = self._window()
+        win.user_var.set(USER)
+        win.cookie_var.set(COOKIE)
+        with mock.patch.object(sw, "test_login", return_value=(True, sw.MSG_TEST_OK)) as run:
+            win.start_test()
+            kind, payload = win._events.get(timeout=2)
+        run.assert_called_once_with(USER, COOKIE)
+        self.assertEqual((kind, payload), ("test", (True, sw.MSG_TEST_OK)))
+        self.assertIn("disabled", win.test_btn.state())
+
+    def test_test_button_validates_before_fetching(self):
+        win = self._window()
+        with mock.patch.object(sw, "test_login") as run:
+            win.start_test()
+            self.assertEqual(win.user_msg.cget("text"), sw.HINT_USER_EMPTY)
+            win.user_var.set(USER)
+            win.start_test()
+            self.assertEqual(win.cookie_msg.cget("text"), sw.HINT_COOKIE_EMPTY)
+        run.assert_not_called()
+        self.assertNotIn("disabled", win.test_btn.state())
 
     def test_missing_archive_is_created_only_after_confirm(self):
         target = self.root.parent / f"{self.root.name}-new" / "Archive"
         self.addCleanup(shutil.rmtree, target.parent, True)
         win = self._window(confirm=lambda *a: False)
+        win.user_var.set(USER)
+        win.cookie_var.set(COOKIE)
         win.archive_var.set(str(target))
         self.assertFalse(win.save())
         self.assertFalse(target.exists())
         self.assertEqual(self.files(), [])
         win = self._window(confirm=lambda *a: True)
+        win.user_var.set(USER)
+        win.cookie_var.set(COOKIE)
         win.archive_var.set(str(target))
         self.assertTrue(win.save())
         self.assertTrue(target.is_dir())
 
     def test_skip_writes_only_setup_done(self):
         win = self._window()
-        win.feed_var.set(GOOD)  # typed but skipped -> not saved
+        win.cookie_var.set(COOKIE)  # typed but skipped -> not saved
         win.skip()
         self.assertEqual(win.result, sw.RESULT_SKIPPED)
         self.assertEqual(self.files(), [os.path.join("data", "settings.json")])
@@ -589,7 +672,7 @@ class WindowTest(_Sandbox):
 
     def test_cancel_writes_nothing(self):
         win = self._window()
-        win.feed_var.set(GOOD)
+        win.cookie_var.set(COOKIE)
         win.cancel()
         self.assertEqual(win.result, sw.RESULT_CANCELLED)
         self.assertEqual(self.files(), [])
@@ -618,7 +701,8 @@ class WindowTest(_Sandbox):
         self.assertTrue(any(t.startswith("Set in .env") for t in texts))
         self.assertFalse(any(secret_archive in t for t in texts))
         self.assertEqual(win.archive_var.get(), "")
-        win.feed_var.set(GOOD)
+        win.user_var.set(USER)
+        win.cookie_var.set(COOKIE)
         win.save()
         self.assertEqual(config.get(sw.ARCHIVE_KEY), secret_archive)  # untouched
         self.assertNotIn(sw.ARCHIVE_KEY,
@@ -642,21 +726,32 @@ class WindowTest(_Sandbox):
         self.assertIn("Save", labels)
         self.assertIn("Cancel", labels)
 
-    def test_feed_is_masked_until_show(self):
+    def test_cookie_is_masked_until_show(self):
         win = self._window()
-        self.assertEqual(win.feed_entry.cget("show"), "•")
+        self.assertEqual(win.cookie_entry.cget("show"), "\u2022")
         win.show_var.set(True)
         win._toggle_show()
-        self.assertEqual(win.feed_entry.cget("show"), "")
+        self.assertEqual(win.cookie_entry.cget("show"), "")
 
     def test_empty_messages_take_no_space(self):
         win = self._window()
-        for label in (win.feed_msg, win.archive_msg):
+        for label in (win.cookie_msg, win.user_msg, win.archive_msg):
             self.assertEqual(label.winfo_manager(), "")  # not gridded while empty
-        win._say(win.feed_msg, "Testing...")
-        self.assertEqual(win.feed_msg.winfo_manager(), "grid")
-        win.feed_var.set("x")  # editing the link clears the message again
-        self.assertEqual(win.feed_msg.winfo_manager(), "")
+        win._say(win.cookie_msg, "Testing...")
+        self.assertEqual(win.cookie_msg.winfo_manager(), "grid")
+        win.cookie_var.set("x")  # editing the cookie clears the message again
+        self.assertEqual(win.cookie_msg.winfo_manager(), "")
+
+    def test_a_cookie_from_the_environment_is_read_only_and_testable(self):
+        os.environ[sw.COOKIE_KEY] = COOKIE
+        os.environ[sw.USER_KEY] = USER
+        win = self._window()
+        self.assertIsNone(win.cookie_entry)
+        with mock.patch.object(sw, "test_login", return_value=(True, "ok")) as run:
+            win.start_test()
+            win._events.get(timeout=2)
+        run.assert_called_once_with(USER, COOKIE)
+        self.assertEqual(sw.editable_keys().count(sw.COOKIE_KEY), 0)
 
     def test_cookie_link_opens_the_setup_section(self):
         win = self._window()

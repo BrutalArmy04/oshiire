@@ -84,9 +84,9 @@ class LockFileTest(unittest.TestCase):
                 self.assertIn(norm(name), self.pins, name)
 
     def test_source_only_packages_are_pinned(self):
-        self.assertEqual(br.SOURCE_ONLY, ("bchlib", "proxy_tools", "sgmllib3k"))
+        self.assertEqual(br.SOURCE_ONLY, ("bchlib", "proxy_tools"))
         self.assertEqual(br.source_only_reqs(),
-                         ["bchlib==2.1.3", "proxy_tools==0.1.0", "sgmllib3k==1.0.0"])
+                         ["bchlib==2.1.3", "proxy_tools==0.1.0"])
 
 
 class AppFileSelectionTest(unittest.TestCase):

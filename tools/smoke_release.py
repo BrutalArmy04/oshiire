@@ -135,6 +135,18 @@ def main():
         return f"{len(written)} starter files"
     check("data root + config + starters", startup_like_app)
 
+    def ingest_reads_the_saved_listing():
+        import ingest
+        import savedlisting
+        rows, nxt = savedlisting.parse_listing(
+            '<div class=" thing id-t3_x " data-fullname="t3_x" data-subreddit="S" '
+            'data-url="https://i.redd.it/a.jpg" data-permalink="/r/S/comments/x/t/" '
+            'data-domain="i.redd.it"><a class="title" href="x">T</a></div>')
+        assert [r["post_id"] for r in rows] == ["t3_x"] and nxt is None, rows
+        assert savedlisting.classify_row(rows[0])[0] == "image"
+        return "listing parser imports and parses"
+    check("ingest saved listing", ingest_reads_the_saved_listing)
+
     def numpy_two():
         import numpy
         major = int(numpy.__version__.split(".")[0])

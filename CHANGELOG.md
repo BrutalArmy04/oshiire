@@ -6,7 +6,17 @@ All notable changes to Oshiire are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- Reddit retired the saved-posts RSS feed on 2026-11-13, so Ingest now reads your saved list while logged in. It needs your Reddit username and a login cookie copied from your browser (the setup window explains how and has a "Test it" button). The old feed link is no longer used.
+- The login cookie expires. When it does, Ingest stops and says so; copy a fresh one in Manage → Settings → App → Change setup.
+- Ingest walks your saved list newest-first and stops where it reaches posts it already has, saving as it goes.
+- The cookie now lives in the setup window instead of a hand-made `.env` file (a `.env` still works and takes priority).
+
+### Added
+- Crossposts remember the subreddit they were originally posted in.
+
 ### Fixed
+- The cookie guide now tells you to open old.reddit.com, and "Test it" no longer reads like a total ("Logged in. Your saved list loads.").
 - In Resolve, an image with no character could not be filed under an existing character folder ("This entry has no character to alias"); the button now files it there.
 
 ## [1.0.1] - 2026-10-17

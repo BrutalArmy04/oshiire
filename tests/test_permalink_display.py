@@ -1,8 +1,9 @@
 """manifest.display_permalink: reddit hosts normalize, everything else doesn't.
 
-The manifest holds both spellings of the same URL -- ingest.py writes the RSS
-feed's `old.reddit.com` links, backfill.py writes `www.reddit.com` ones from the
-CSV export -- and the review/resolve screens render whichever they find. This
+The manifest holds both spellings of the same URL -- entries ingest.py wrote
+while it read the RSS feed carry `old.reddit.com` links, backfill.py (and ingest
+since) write `www.reddit.com` ones -- and the review/resolve screens render
+whichever they find. This
 pins the display-time fix: the host is rewritten, the rest of the URL is byte-
 for-byte preserved, and non-reddit hosts (notably the redd.it image domains) are
 never touched.

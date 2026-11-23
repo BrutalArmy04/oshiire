@@ -494,7 +494,7 @@ FULLSCREEN_JS = """() => { const img = document.querySelector('#review-image img
 # described in running order, so a new user knows what each menu button does.
 HELP_MD = """\
 **The usual order:** Ingest → Review → Resolve → Preview filing → File images.
-- **Ingest** — fetch new saves from your Reddit feed. AI tagging runs
+- **Ingest** — fetch new saves from your Reddit saved list. AI tagging runs
   automatically afterwards.
 - **Backfill** — work through older saves from your Reddit data export, a
   batch at a time. AI tagging runs automatically afterwards.
@@ -4860,7 +4860,7 @@ with gr.Blocks(title="Oshiire", analytics_enabled=False, delete_cache=(86400, 86
     with gr.Row(elem_classes=["page-header", "pagehead"]):
         ingest_back_btn = gr.Button("← Menu", size="sm", scale=0, variant="secondary")
         gr.Markdown("## Ingest")
-    ingest_intro_md = gr.Markdown("Fetch new saves from your Reddit feed. AI tagging runs afterwards.")
+    ingest_intro_md = gr.Markdown("Fetch new saves from your Reddit saved list. AI tagging runs afterwards.")
     ingest_run_btn = gr.Button("Fetch new saves", variant="primary")
     ingest_status_md = gr.Markdown()
     with gr.Column(elem_classes=["result-frame", "page-hidden"]) as ingest_result_group:
@@ -4917,11 +4917,11 @@ with gr.Blocks(title="Oshiire", analytics_enabled=False, delete_cache=(86400, 86
         gr.Markdown("## Free up saved space")
     gr.Markdown(
         "Reddit only shows about the newest **1,000** saved posts. Past that, "
-        "new saves are stored but never appear in your saved list or the feed, "
+        "new saves are stored but never appear in your saved list, "
         "so Ingest stops finding anything. Unsaving posts Oshiire has **already "
         "captured** frees room so new ones show up again.\n\n"
         "Oshiire never clicks anything on Reddit itself — it stays 100% local "
-        "(no Reddit API, no login, nothing written back). The unsaving happens "
+        "(no Reddit API, nothing written back). The unsaving happens "
         "in *your* browser, driven by you.")
 
     gr.Markdown("### Step 1 — Make the list", elem_classes=["step-head"])
@@ -5561,7 +5561,7 @@ with gr.Blocks(title="Oshiire", analytics_enabled=False, delete_cache=(86400, 86
         app_theme_save_btn = gr.Button("Save", variant="primary", interactive=False)
         app_theme_status_md = gr.Markdown("")
 
-        # The feed link, archive folder and username, in the setup window
+        # The username, login cookie and archive folder, in the setup window
         # (setup_window.py --change, its own process).
         change_setup_btn = gr.Button("Change setup...")
         change_setup_md = gr.Markdown("")

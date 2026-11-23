@@ -20,12 +20,12 @@ first run, daily usage — applies to both.
 Extract the archive and start `Oshiire.bat` (Windows) or `oshiire.sh` (Linux).
 The first time, a **setup window** asks for three things:
 
-- your **saved-feed link** (with a "Test it" button and steps for finding it;
-  see [step 3 under From source](#from-source) for what that link is and why
-  it is a secret),
+- your **Reddit username**,
+- your **Reddit login cookie** (with a "Test it" button and steps for copying
+  it; see [Reddit login cookie](#reddit-login-cookie) for what it is and why it
+  is a secret),
 - your **archive folder** — where your sorted pictures go; it may be empty, or
-  a cloud-synced folder,
-- your **Reddit username** (optional).
+  a cloud-synced folder.
 
 **Save** writes them to `data/config.env` **inside your data folder** (below),
 never to a `.env`, and never into the app folder. **Skip for now** writes
@@ -62,57 +62,63 @@ the process environment, a `.env` in the **data folder**, a `.env` in the
 the environment shows as "Set in .env" in the setup window and can only be
 changed there. The setup window never writes a `.env`.
 
-## Gallery posts / Reddit login cookie
+## Reddit login cookie
 
-Single-image posts need nothing more than the feed link. Three parts of Oshiire
-read server-rendered `old.reddit.com` pages instead of the feed: ingest's
-**gallery** fetch (the feed has no per-image data for a gallery post), the
-**Backfill** sweep, and `calibrate.py`. Since the end of July 2026 old.reddit
-requires a logged-in session for those pages, and serves its login page — as a
-normal HTTP 200 — to anyone without one. A logged-in **cookie** copied from
-your browser, `REDDIT_SESSION_COOKIE`, is what makes them return real pages.
-The RSS feed does **not** need it; that is read from `www.reddit.com` with no
-cookie at all.
+Reddit retired its private saved-posts RSS feed on 2026-11-13. Oshiire now reads
+the same saved list you see in your browser, at
+`old.reddit.com/user/<your username>/saved/`, and Reddit only shows that to a
+logged-in session. So **Ingest needs two things**: your Reddit **username** and
+a login **cookie** copied from your browser, `REDDIT_SESSION_COOKIE`. The same
+cookie is what lets the **gallery** fetch, the **Backfill** sweep and
+`calibrate.py` read `old.reddit.com` pages (all of it goes out over
+`curl_cffi`'s Chrome-impersonated transport, which you don't configure).
 
-Without it, gallery posts are recorded as retryable `skipped` entries (nothing
-is lost: the next ingest after you add the cookie picks them up), and Backfill
-can't run.
+**Where to put it.** In the setup window (it opens by itself on a first run;
+later, **Manage → Settings → App → Change setup...**). Paste the cookie into the
+masked box and press **Test it**: it makes one request and tells you "Logged in.
+Your saved list loads.", "cookie has expired or is wrong", or "this login is for
+a different account than <username>". **Save** writes it to `data/config.env`
+inside your data folder. A cookie you have put in a `.env` (or the environment)
+instead is shown there as read-only "Set in .env" and the window never touches
+it.
 
-**Where to put it.** The cookie lives only in a `.env` file; the setup window
-deliberately has no box for it.
+**To get the value:**
 
-- **Downloaded copy:** on the home menu click **?** → **Open data folder**, and
-  in that folder create a plain-text file named exactly `.env` (on Windows, in
-  Notepad choose *Save as type: All files*, or it becomes `.env.txt`) holding
-  one line:
+1. Open old.reddit.com in your browser while logged in.
+2. Press F12 to open devtools, go to the **Network** tab and reload the page.
+3. Click the first request (type *document*), then **Headers** →
+   **Request Headers**, and copy the entire `Cookie:` value. (A leading
+   `Cookie:` and surrounding quotes are fine; Oshiire strips them. It must
+   contain `reddit_session=`.)
+4. Paste it into the setup window.
 
-  ```
-  REDDIT_SESSION_COOKIE=reddit_session=<value>; token_v2=<value>; ...
-  ```
+If you prefer a file, put one line in a `.env` in the data folder (a downloaded
+copy: **?** → **Open data folder**; from source: the repo folder), with your
+username next to it:
 
-  Oshiire reads the data folder's `.env` fresh for every job, so the next
-  Ingest or Backfill uses it; no restart needed.
-- **From source:** add the same line to the `.env` in the repo folder.
+```
+REDDIT_USERNAME=<your username>
+REDDIT_SESSION_COOKIE=reddit_session=<value>; token_v2=<value>; ...
+```
 
-**To get the value:** open devtools (F12) → **Network** tab → load any page on
-`old.reddit.com` while logged in → click that request → **Headers** →
-**Request Headers** → copy the entire `Cookie:` value, and paste it after
-`REDDIT_SESSION_COOKIE=` as one line.
+Oshiire reads these fresh for every job; no restart needed.
 
-**Treat it like a password — worse, in fact:** whoever holds it is logged in as
-you, with none of the feed token's read-only limits. Never paste it into an
-issue, a chat, or a screenshot. (In a git checkout `.env` is gitignored.) Leave
-it out if you only ingest single-image posts from the feed and never run
-backfill.
+**It expires — this will happen.** A password change or a logout invalidates
+the cookie, and it expires on its own besides. When it does, **Ingest stops
+with "Your Reddit login cookie has expired or is wrong"** (Reddit answers the
+saved list with HTTP 403, *not* a login page). Copy a fresh cookie the same way
+and paste it in **Manage → Settings → App → Change setup...**; nothing is lost,
+and everything fetched before the stop is already saved. If the message instead
+says **"This login is for a different account than <username>"**, the cookie
+belongs to another Reddit account than the username you entered: copy it while
+logged in as the right one, or correct the username.
 
-It expires: a password change or a logout invalidates it, and it expires on its
-own besides. When a run stops with **`Reddit returned its login wall`**, copy
-it again.
+**Treat it like a password — more than one:** whoever holds it is logged in as
+you. Never paste it into an issue, a chat, or a screenshot. (In a git checkout
+`.env` is gitignored, and so is `data/config.env`.)
 
-The cookie is necessary but not sufficient — those fetches also go out over
-`curl_cffi`'s Chrome-impersonated transport (see step 1 under
-[From source](#from-source)). You don't configure that; it just explains why a
-hand-rolled `curl` with the same cookie still hits the wall.
+The old `REDDIT_SAVED_FEED_URL` is no longer used. A leftover line in an old
+`.env` is harmless; delete it whenever you like.
 
 ## From source
 
@@ -209,44 +215,28 @@ all gitignored.
    practice you always need it — but if you are experimenting on an older
    interpreter, that is the line that tells you whether to bother.
 
-3. Get your Reddit saved-posts feed URL: go to
-   `old.reddit.com/prefs/feeds`, find "your saved links", and copy its RSS
-   URL. Reddit hands it to you on the `old.reddit.com` host — **change that to
-   `www.reddit.com`**, keeping everything from `/saved.rss?` onward exactly as
-   copied, so what you save looks like
-   `https://www.reddit.com/saved.rss?feed=<token>&user=<your-username>`.
-
-   That swap matters: since the end of July 2026 `old.reddit.com` answers
-   logged-out requests with its login page, so the old.reddit form of this URL
-   returns the login wall instead of your saves. The `www` host still serves
-   the feed with no cookie at all. (Ingest rewrites an old.reddit feed host to
-   `www` for you, but store the `www` form anyway — it is what actually gets
-   used, and it keeps the file honest about where the request goes.)
-
-   **This URL is a secret** — it has a per-account access token embedded
-   in it, so treat it like a password, never commit it or share it. It stops
-   working if you change your Reddit password (that's what invalidates it if
-   it ever leaks — password change is also your recovery step if it does).
-   The feed returns your ~25 most recent saves by default; appending
-   `&limit=100` widens that to ~100.
+3. Get your Reddit login cookie: see [Reddit login cookie](#reddit-login-cookie)
+   above for how to copy it from your browser. It is a secret — whoever holds
+   it is logged in as you — and it expires, so you will repeat this now and then.
+   (Reddit retired the saved-posts RSS feed on 2026-11-13, so the old feed URL
+   no longer works and is not used.)
 
 4. Give Oshiire its settings — either way works:
    - **The setup window.** Just start Oshiire (step 2 of "Your first run"):
-     with no feed link or archive folder configured, the same setup window a
-     downloaded copy shows opens and writes them to `data/config.env` (see
-     [Downloaded copy](#downloaded-copy)).
+     with no username, login cookie or archive folder configured, the same
+     setup window a downloaded copy shows opens and writes them to
+     `data/config.env` (see [Downloaded copy](#downloaded-copy)).
    - **A `.env`.** Copy `examples/.env.example` to `.env` and fill in:
-     - `REDDIT_SAVED_FEED_URL` — the URL from step 3.
      - `ARCHIVE_DIR` — the folder your sorted archive should live in. **This
        does not need to exist as a real archive already** — see "Your first
        run" below. It can be a cloud-synced folder like Google Drive; this
        project only ever moves files into it, the sync client handles the
        upload.
-     - `REDDIT_USERNAME` — optional, included in the request User-Agent per
-       Reddit's API etiquette guidelines. Leave it blank to use a generic value.
-     - `REDDIT_SESSION_COOKIE` — **the second secret in this file**, needed for
-       gallery posts and backfill. See
-       [Gallery posts / Reddit login cookie](#gallery-posts--reddit-login-cookie).
+     - `REDDIT_USERNAME` — **required.** The account whose saved list Ingest
+       reads (it is also in the request User-Agent per Reddit's API etiquette
+       guidelines).
+     - `REDDIT_SESSION_COOKIE` — **required, and a secret.** The login from
+       step 3; it expires. See [Reddit login cookie](#reddit-login-cookie).
 
      A value in `.env` wins over `data/config.env`, and the setup window shows
      it as read-only.
@@ -275,7 +265,7 @@ all gitignored.
 
 | Template | Copy it to | What it is |
 |---|---|---|
-| `examples/.env.example` | `.env` | Feed URL, session cookie, and archive path. **Holds two secrets** — see steps 3 and 4. |
+| `examples/.env.example` | `.env` | Username, session cookie, and archive path. **Holds a secret** (the cookie) — see step 3. |
 | `examples/layout.example.json` | `layout.json` | Your archive's filing rules: per-franchise style, aliases, special folders, wallpaper thresholds. |
 | `examples/known_series_names.example.txt` | `known_series_names.txt` | `SHORTNAME = Full Series Name`, for series filed into `Others/Known Series/` rather than a folder of their own. |
 | `examples/subreddit_map.example.json` | `subreddit_map.json` | subreddit → franchise (+ character). Grows as you review; you don't need to pre-fill it. |
@@ -447,11 +437,11 @@ With that in mind, the first end-to-end run looks like this:
    It is also a hard prerequisite for the back-catalogue sweep — see
    [BACKFILL.md](BACKFILL.md).
 2. **Double-click `Oshiire.bat`** (Windows) or **`oshiire.sh`** (Linux/macOS).
-   The first time, the setup window asks for your feed link and archive folder
-   (see [Downloaded copy](#downloaded-copy)); then Oshiire opens in your web
+   The first time, the setup window asks for your username, login cookie and
+   archive folder (see [Downloaded copy](#downloaded-copy)); then Oshiire opens in your web
    browser. Everything below is a door on the home
    menu — no terminal.
-3. **Ingest** (Coming in) — fetches your saved feed and downloads new images
+3. **Ingest** (Coming in) — walks your saved list and downloads new images
    into `staging/` (in your data folder). AI tagging runs automatically when
    the fetch finishes. Nothing is reviewed or filed yet; check `staging/` and
    you'll see the images.
@@ -481,16 +471,15 @@ If **Ingest** finds nothing new even though you've saved things, nothing is
 broken — you've hit Reddit's saved-listing ceiling. See
 [BACKFILL.md](BACKFILL.md), which is the whole story and the fix.
 
-If instead a run stops with **`Reddit returned its login wall`**, or ingest
-warns that a gallery fetch hit it, your `REDDIT_SESSION_COOKIE` has expired —
-a password change or a logout invalidates it, and they expire on their own
-besides. Re-copy it from the browser (see
-[Gallery posts / Reddit login cookie](#gallery-posts--reddit-login-cookie)) and
-re-run. Nothing is lost:
-backfill rewinds its cursor to the row it was on, and a walled gallery is
-recorded as a retryable `skipped` entry that the next ingest picks up. If the
-*feed* is the thing returning the wall, check `REDDIT_SAVED_FEED_URL` uses the
-`www.reddit.com` host (step 3) before assuming the token is dead.
+If instead a run stops with **`Your Reddit login cookie has expired or is
+wrong`** (ingest), **`Reddit returned its login wall`** (backfill), or ingest
+warns that a gallery fetch hit the wall, your `REDDIT_SESSION_COOKIE` has
+expired — a password change or a logout invalidates it, and they expire on their
+own besides. Re-copy it from the browser (see
+[Reddit login cookie](#reddit-login-cookie)) and re-run. Nothing is lost:
+ingest keeps every page it finished, backfill rewinds its cursor to the row it
+was on, and a walled gallery is recorded as a retryable `skipped` entry that the
+next ingest picks up.
 
 ## Usage
 
@@ -517,7 +506,7 @@ Settings keep working meanwhile.
 
 The menu, in workflow order:
 
-- **Ingest** (Coming in) — fetches the saved feed, downloads new images into
+- **Ingest** (Coming in) — walks your saved list, downloads new images into
   `staging/`, runs metadata tagging, then **AI tagging runs automatically** (the
   local WD14 tagger fills whatever metadata left unidentified) — all recorded in
   `manifest.json`. Saved posts with no importable image (text, links, video, an

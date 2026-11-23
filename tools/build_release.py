@@ -43,9 +43,9 @@ TOP = "Oshiire"
 LOCK_FILE = "requirements-lock.txt"
 
 # No Python 3.14 wheel on PyPI: built from source by the workflow into the
-# wheelhouse. bchlib is a C extension (wheels stop at cp312); proxy_tools and
-# sgmllib3k are pure Python with sdists only.
-SOURCE_ONLY = ("bchlib", "proxy_tools", "sgmllib3k")
+# wheelhouse. bchlib is a C extension (wheels stop at cp312); proxy_tools is
+# pure Python with an sdist only.
+SOURCE_ONLY = ("bchlib", "proxy_tools")
 
 # Where the import walk starts: the desktop entry point, the setup window (also
 # run as its own process), and every script jobs.py runs as a pipeline step

@@ -1,4 +1,4 @@
-"""The setup window: the saved-feed link, the archive folder and the username.
+"""The setup window: the Reddit username and login cookie, and the archive folder.
 
 Two modes:
   "first"  -- opened by app.py on a first run (needs_setup()), in-process,
@@ -10,11 +10,11 @@ Two modes:
               itself. Save / Cancel only, no extras.
 
 Everything the window decides is in plain functions above the window class
-(validators, needs_setup, the feed test, the shortcut builders, apply_save /
+(validators, needs_setup, the login test, the shortcut builders, apply_save /
 apply_skip), so it is testable without a display. tkinter is imported only when
 a window is actually built.
 
-Secrets: the feed link is shown masked, never logged, never echoed in a
+Secrets: the login cookie is shown masked, never logged, never echoed in a
 message. A setting that comes from the environment or a .env file is shown as
 read-only ("Set in .env") without its value, and is never written.
 """
@@ -30,24 +30,19 @@ import threading
 import webbrowser
 from collections import namedtuple
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 import config
 import datahome
 import fsutil
 import settings
 
-FEED_KEY = "REDDIT_SAVED_FEED_URL"
 ARCHIVE_KEY = "ARCHIVE_DIR"
 USER_KEY = "REDDIT_USERNAME"
-REQUIRED_KEYS = (FEED_KEY, ARCHIVE_KEY)
-EDITABLE_KEYS = (FEED_KEY, ARCHIVE_KEY, USER_KEY)
+COOKIE_KEY = "REDDIT_SESSION_COOKIE"
+REQUIRED_KEYS = (ARCHIVE_KEY, USER_KEY, COOKIE_KEY)
+EDITABLE_KEYS = (COOKIE_KEY, ARCHIVE_KEY, USER_KEY)
 
-FEEDS_PAGE = "https://old.reddit.com/prefs/feeds/"
-REDDIT_HOSTS = ("reddit.com", "www.reddit.com", "old.reddit.com")
-FEED_HOST = "www.reddit.com"
-FEED_PATH = "/saved.rss"
-TEST_TIMEOUT_S = 15  # ingest.fetch_feed's own timeout
+TEST_TIMEOUT_S = 15  # redditclient.DEFAULT_TIMEOUT
 
 RESULT_SAVED = "saved"
 RESULT_SKIPPED = "skipped"
@@ -55,85 +50,72 @@ RESULT_CANCELLED = "cancelled"
 RESULT_UNAVAILABLE = "unavailable"  # no tkinter / no display
 
 GITHUB_REPO_URL = "https://github.com/BrutalArmy04/oshiire"
-COOKIE_DOCS_ANCHOR = "gallery-posts--reddit-login-cookie"  # docs/SETUP.md's heading
+COOKIE_DOCS_ANCHOR = "reddit-login-cookie"  # docs/SETUP.md's heading
 COOKIE_DOCS_URL = f"{GITHUB_REPO_URL}/blob/main/docs/SETUP.md#{COOKIE_DOCS_ANCHOR}"
-COOKIE_LINE = "Gallery posts need a Reddit login cookie."
-COOKIE_LINK = "How to set it up"
+COOKIE_LINK = "More help copying it"
 
 
 # --------------------------------------------------------------------------- #
 # Does the first-run window need to open?
 # --------------------------------------------------------------------------- #
 def needs_setup():
-    """True when the feed link or the archive folder is missing from the merged
-    config AND the window was never answered (data/settings.json has no
+    """True when the username, the login cookie or the archive folder is missing
+    from the merged config AND the window was never answered (data/settings.json has no
     "setup_done": true)."""
     missing = any(not config.get(key).strip() for key in REQUIRED_KEYS)
     return missing and not settings.setup_done()
 
 
 # --------------------------------------------------------------------------- #
-# Validators -- messages never echo the link or its token
+# Validators -- messages never echo the cookie
 # --------------------------------------------------------------------------- #
 _USERNAME_RE = re.compile(r"^/?(?:u/|user/)?[A-Za-z0-9_-]{3,20}/?$")
+_USERNAME_PREFIX_RE = re.compile(r"^/?(?:u/|user/)?")
 
-HINT_EMPTY = "Paste the saved-feed link."
-HINT_USERNAME = ("That looks like a username. Put it in the Username box below; the "
-                 "feed link is a long address from the feeds page.")
-HINT_SCHEME = "Copy the whole link -- it starts with https://"
-HINT_HOST = "That isn't a reddit.com link. Copy the RSS link from the feeds page."
-HINT_FEEDS_PAGE = ("That's the feeds page itself. On that page, copy the RSS link "
-                   "next to \"your saved links\".")
-HINT_USER_PAGE = ("That's a profile page, not the feed. Copy the RSS link next to "
-                  "\"your saved links\" on the feeds page.")
-HINT_OTHER_FEED = ("That isn't your saved-posts feed. Copy the RSS link next to "
-                   "\"your saved links\".")
-HINT_PARAMS = "The link is missing part of itself. Copy it again in full."
-MSG_FEED_OK = "Looks like a saved-feed link."
+HINT_USER_EMPTY = "Enter your Reddit username."
+HINT_USER_BAD = ("That doesn't look like a Reddit username (3-20 letters, numbers, "
+                 "dashes or underscores).")
+HINT_COOKIE_EMPTY = "Paste your Reddit login cookie."
+HINT_COOKIE_LINES = "That has line breaks in it. Copy the Cookie value again as one line."
+HINT_COOKIE_BAD = ("That doesn't look like a Reddit login cookie -- it should contain "
+                   "reddit_session=. Copy the whole Cookie value again from the request "
+                   "headers.")
+_COOKIE_PREFIX_RE = re.compile(r"^cookie\s*:\s*", re.IGNORECASE)
+_COOKIE_SESSION_RE = re.compile(r"(?:^|;\s*)reddit_session=[^;\s]+", re.IGNORECASE)
 
 
-def validate_feed_url(text):
-    """(ok, normalized, message). `normalized` is the link with its host set to
-    www.reddit.com (old.reddit.com walls logged-out requests) and no fragment;
-    '' when not ok. The query -- feed= and user=, in any order -- is kept as
-    pasted. `message` never contains the link or its token."""
-    value = (text or "").strip().strip('"').strip("'").strip()
+def clean_username(text):
+    """(ok, name, message). Accepts `name`, `u/name` and `/user/name/`; `name`
+    is the bare username, '' when not ok."""
+    value = (text or "").strip()
     if not value:
-        return (False, "", HINT_EMPTY)
-    if "://" not in value and _USERNAME_RE.match(value):
-        return (False, "", HINT_USERNAME)
-    try:
-        parts = urlsplit(value)
-        host = (parts.hostname or "").lower()
-    except ValueError:
-        return (False, "", HINT_SCHEME)
-    if parts.scheme.lower() != "https" or not host:
-        # "www.reddit.com/saved.rss?..." with no scheme parses as a path.
-        return (False, "", HINT_SCHEME)
-    if host not in REDDIT_HOSTS:
-        return (False, "", HINT_HOST)
-    path = parts.path.rstrip("/") or "/"
-    lower = path.lower()
-    if lower.startswith("/prefs/feeds"):
-        return (False, "", HINT_FEEDS_PAGE)
-    if lower.startswith("/user/") or lower.startswith("/u/"):
-        return (False, "", HINT_USER_PAGE)
-    if lower != FEED_PATH:
-        return (False, "", HINT_OTHER_FEED)
-    query = parse_qs(parts.query, keep_blank_values=True)
-    if not (query.get("feed") or [""])[0] or not (query.get("user") or [""])[0]:
-        return (False, "", HINT_PARAMS)
-    normalized = urlunsplit(("https", FEED_HOST, FEED_PATH, parts.query, ""))
-    return (True, normalized, MSG_FEED_OK)
+        return (False, "", HINT_USER_EMPTY)
+    if not _USERNAME_RE.match(value):
+        return (False, "", HINT_USER_BAD)
+    return (True, _USERNAME_PREFIX_RE.sub("", value).rstrip("/"), "")
 
 
-def feed_user(url):
-    """The user= value of a feed link ('' if none) -- offered to pre-fill the
-    Username box. A username is not a secret."""
-    try:
-        return (parse_qs(urlsplit(url).query).get("user") or [""])[0].strip()
-    except ValueError:
-        return ""
+def _strip_quotes(value):
+    value = value.strip()
+    while len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1].strip()
+    return value
+
+
+def clean_cookie(text):
+    """(ok, cookie, message). Strips surrounding quotes and a leading "Cookie:"
+    (what DevTools' "copy" and a pasted header line carry), then requires a
+    reddit_session= value. `cookie` is '' when not ok. `message` never contains
+    any part of the value."""
+    value = _strip_quotes(text or "")
+    value = _strip_quotes(_COOKIE_PREFIX_RE.sub("", value))
+    if not value:
+        return (False, "", HINT_COOKIE_EMPTY)
+    if any(ch in value for ch in "\r\n\0"):
+        return (False, "", HINT_COOKIE_LINES)
+    if not _COOKIE_SESSION_RE.search(value):
+        return (False, "", HINT_COOKIE_BAD)
+    return (True, value, "")
 
 
 ArchiveCheck = namedtuple("ArchiveCheck", "ok message will_create")
@@ -211,47 +193,44 @@ def validate_archive_dir(path, app_dir, data_root):
 
 
 # --------------------------------------------------------------------------- #
-# "Test it" -- one read-only fetch through ingest's own transport and parser
+# "Test it" -- ONE read-only fetch of saved page 1, through savedlisting
 # --------------------------------------------------------------------------- #
-MSG_TEST_REFUSED = "Reddit refused the link. Copy it again from the feeds page."
-MSG_TEST_WALL = ("Reddit answered with its login page instead of your saves. Copy the "
-                 "link again from the feeds page.")
 MSG_TEST_TIMEOUT = f"Reddit didn't answer within {TEST_TIMEOUT_S} seconds. Try again."
 MSG_TEST_OFFLINE = "Couldn't reach Reddit. Check your internet connection."
-MSG_TEST_NOT_FEED = "That link didn't return a feed. Copy it again from the feeds page."
+MSG_TEST_OK = "Logged in. Your saved list loads."
+MSG_TEST_BUSY = "Reddit is rate limiting right now. Try again in a minute."
+MSG_TEST_COPY_AGAIN = "Copy the cookie again from your browser."
+MSG_TEST_FIX_ONE = "Copy the cookie from that account, or correct the username."
 
 
-def test_feed(url):
-    """(ok, message) for ONE read-only fetch of the feed, via ingest.fetch_feed
-    (the same transport, host rewrite, login-wall check and parser ingest uses;
-    15 s timeout). Blocking -- the window runs it in a worker thread. The
-    message never contains the link: exception texts are not shown, because a
-    requests error message carries the URL."""
-    ok, normalized, message = validate_feed_url(url)
+def test_login(username, cookie):
+    """(ok, message) for ONE read-only fetch of saved page 1 with the given
+    username and cookie (not necessarily saved yet): logged in and how many saves
+    are visible, cookie expired or wrong, or a login for a different account than
+    the username. Blocking -- the window runs it in a worker thread. The message
+    never contains the cookie: exception texts are not shown."""
+    ok, name, message = clean_username(username)
     if not ok:
         return (False, message)
-    import requests
-    import ingest
+    ok, cleaned, message = clean_cookie(cookie)
+    if not ok:
+        return (False, message)
+    import redditclient
+    import savedlisting
     try:
-        parsed = ingest.fetch_feed(normalized)
-    except ingest.FeedUnavailable:
-        return (False, MSG_TEST_WALL)
-    except requests.HTTPError as exc:
-        status = getattr(getattr(exc, "response", None), "status_code", None)
-        if status in (401, 403, 404):
-            return (False, MSG_TEST_REFUSED)
-        return (False, f"Reddit had a problem answering (error {status}). Try again in a minute.")
-    except requests.Timeout:
-        return (False, MSG_TEST_TIMEOUT)
-    except requests.ConnectionError:
+        savedlisting.fetch_page(savedlisting.listing_url(name), cookie=cleaned)
+    except savedlisting.SavedAuthError as exc:
+        tail = MSG_TEST_FIX_ONE if exc.logged_in else MSG_TEST_COPY_AGAIN
+        return (False, f"{savedlisting.auth_message(exc, name)} {tail}")
+    except savedlisting.SavedRateLimited:
+        return (False, MSG_TEST_BUSY)
+    except redditclient.RedditFetchError as exc:
+        if "timeout" in (exc.kind or "").lower():
+            return (False, MSG_TEST_TIMEOUT)
         return (False, MSG_TEST_OFFLINE)
-    except Exception as exc:  # never show str(exc): it may carry the URL
+    except Exception as exc:  # never show str(exc)
         return (False, f"The test failed ({type(exc).__name__}).")
-    entries = getattr(parsed, "entries", None) or []
-    if not entries and getattr(parsed, "bozo", False):
-        return (False, MSG_TEST_NOT_FEED)
-    n = len(entries)
-    return (True, f"Found {n} saved post{'' if n == 1 else 's'}. The link works.")
+    return (True, MSG_TEST_OK)
 
 
 # --------------------------------------------------------------------------- #
@@ -615,40 +594,56 @@ class SetupWindow:
         row = 0
         ttk.Label(outer, text="Set up Oshiire", style="Title.TLabel").grid(row=row, sticky="w")
         row += 1
-        intro = ("Oshiire needs your saved-posts feed link and the folder your archive "
-                 "lives in." if self.mode == "first" else
+        intro = ("Oshiire needs your Reddit username and login cookie, and the folder "
+                 "your archive lives in." if self.mode == "first" else
                  "Change Oshiire's setup. Changes take effect the next time you start Oshiire.")
         ttk.Label(outer, text=intro, style="Note.TLabel", wraplength=520).grid(
             row=row, sticky="w", pady=(2, 12))
         row += 1
 
-        # -- feed link --
-        self.feed_var = tk.StringVar(value=self._prefill(FEED_KEY))
-        self.show_var = tk.BooleanVar(value=False)
-        card = self._card(outer, row, "Saved-feed link")
+        # -- username --
+        self.user_var = tk.StringVar(value=self._prefill(USER_KEY))
+        card = self._card(outer, row, "Reddit username")
         row += 1
-        guide = ("1. Open the feeds page (log in to Reddit if asked).\n"
-                 "2. Find \"your saved links\" and copy its RSS link.\n"
-                 "3. Paste it here.")
+        if self._locked(USER_KEY):
+            self._locked_row(card, 1, USER_KEY)
+        else:
+            ttk.Entry(card, textvariable=self.user_var, width=30).grid(
+                row=1, column=0, sticky="w", pady=(4, 0))
+        self.user_msg = ttk.Label(card, text="", style="Hint.TLabel", wraplength=500)
+        self.user_msg.grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        self.user_msg.grid_remove()
+
+        # -- login cookie --
+        self.cookie_var = tk.StringVar(value=self._prefill(COOKIE_KEY))
+        self.show_var = tk.BooleanVar(value=False)
+        card = self._card(outer, row, "Reddit login cookie")
+        row += 1
+        guide = ("Oshiire reads your saved posts while logged in as you. To copy the cookie:\n"
+                 "1. Open old.reddit.com in your browser, logged in.\n"
+                 "2. Press F12 (DevTools), open the Network tab and reload the page.\n"
+                 "3. Click the first request (type \"document\"), find Request Headers, and\n"
+                 "    copy the whole Cookie value.\n"
+                 "4. Paste it here. It expires; when Oshiire says so, copy a fresh one.")
         ttk.Label(card, text=guide, style="Hint.TLabel", justify="left").grid(
             row=1, column=0, columnspan=3, sticky="w", pady=(2, 6))
-        if self._locked(FEED_KEY):
-            self._locked_row(card, 2, FEED_KEY)
-            self.feed_entry = None
+        if self._locked(COOKIE_KEY):
+            self._locked_row(card, 2, COOKIE_KEY)
+            self.cookie_entry = None
         else:
-            ttk.Button(card, text="Open the feeds page",
-                       command=lambda: webbrowser.open(FEEDS_PAGE)).grid(
-                row=2, column=0, sticky="w", pady=(0, 6))
-            self.feed_entry = ttk.Entry(card, textvariable=self.feed_var, show="•", width=56)
-            self.feed_entry.grid(row=3, column=0, sticky="ew")
+            self.cookie_entry = ttk.Entry(card, textvariable=self.cookie_var, show="\u2022", width=56)
+            self.cookie_entry.grid(row=2, column=0, sticky="ew")
             ttk.Checkbutton(card, text="Show", variable=self.show_var,
-                            command=self._toggle_show).grid(row=3, column=1, padx=(8, 0))
-            self.test_btn = ttk.Button(card, text="Test it", command=self.start_test)
-            self.test_btn.grid(row=3, column=2, padx=(8, 0))
-            self.feed_var.trace_add("write", lambda *_: self._feed_changed())
-        self.feed_msg = ttk.Label(card, text="", style="Hint.TLabel", wraplength=500)
-        self.feed_msg.grid(row=4, column=0, columnspan=3, sticky="w", pady=(4, 0))
-        self.feed_msg.grid_remove()  # shown by _say only while it has text
+                            command=self._toggle_show).grid(row=2, column=1, padx=(8, 0))
+            self.cookie_var.trace_add("write", lambda *_: self._say(self.cookie_msg, ""))
+        self.test_btn = ttk.Button(card, text="Test it", command=self.start_test)
+        self.test_btn.grid(row=2, column=2, padx=(8, 0))
+        self.cookie_link = ttk.Button(card, text=COOKIE_LINK, style="Link.TButton",
+                                      cursor="hand2", command=self._open_cookie_docs)
+        self.cookie_link.grid(row=3, column=0, sticky="w", pady=(6, 0))
+        self.cookie_msg = ttk.Label(card, text="", style="Hint.TLabel", wraplength=500)
+        self.cookie_msg.grid(row=4, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        self.cookie_msg.grid_remove()  # shown by _say only while it has text
 
         # -- archive folder --
         self.archive_var = tk.StringVar(value=self._prefill(ARCHIVE_KEY))
@@ -668,24 +663,6 @@ class SetupWindow:
         self.archive_msg = ttk.Label(card, text="", style="Hint.TLabel", wraplength=500)
         self.archive_msg.grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
         self.archive_msg.grid_remove()
-
-        # -- username --
-        self.user_var = tk.StringVar(value=self._prefill(USER_KEY))
-        card = self._card(outer, row, "Reddit username (optional)")
-        row += 1
-        if self._locked(USER_KEY):
-            self._locked_row(card, 1, USER_KEY)
-        else:
-            ttk.Entry(card, textvariable=self.user_var, width=30).grid(
-                row=1, column=0, sticky="w", pady=(4, 0))
-
-        cookie = ttk.Frame(outer)
-        cookie.grid(row=row, sticky="w", pady=(4, 8))
-        row += 1
-        ttk.Label(cookie, text=COOKIE_LINE, style="Note.TLabel").grid(row=0, column=0, sticky="w")
-        self.cookie_link = ttk.Button(cookie, text=COOKIE_LINK, style="Link.TButton",
-                                      cursor="hand2", command=self._open_cookie_docs)
-        self.cookie_link.grid(row=0, column=1, sticky="w", padx=(6, 0))
 
         # -- first-run extras --
         self.shortcut_var = tk.BooleanVar(value=datahome.is_release())
@@ -781,17 +758,11 @@ class SetupWindow:
 
     # -- small actions ----------------------------------------------------------
     def _toggle_show(self):
-        if self.feed_entry is not None:
-            self.feed_entry.configure(show="" if self.show_var.get() else "•")
+        if self.cookie_entry is not None:
+            self.cookie_entry.configure(show="" if self.show_var.get() else "\u2022")
 
     def _open_cookie_docs(self):
         webbrowser.open(COOKIE_DOCS_URL)
-
-    def _feed_changed(self):
-        self._say(self.feed_msg, "")
-        ok, normalized, _ = validate_feed_url(self.feed_var.get())
-        if ok and not self.user_var.get().strip() and not self._locked(USER_KEY):
-            self.user_var.set(feed_user(normalized))
 
     def _browse(self):
         from tkinter import filedialog
@@ -810,19 +781,30 @@ class SetupWindow:
             label.grid_remove()  # an empty line would leave a gap under the card
 
     # -- worker threads (they only ever put plain tuples on the queue) ----------
+    def _current(self, key, var):
+        """The value to test with: a key set elsewhere (env/.env) is read from the
+        merged config, anything else from the field."""
+        return config.get(key) if self._locked(key) else var.get()
+
     def start_test(self):
-        url = self.feed_var.get()
-        ok, _, message = validate_feed_url(url)
+        username = self._current(USER_KEY, self.user_var)
+        ok, _, message = clean_username(username)
         if not ok:
-            self._say(self.feed_msg, message, good=False)
+            self._say(self.user_msg, message, good=False)
+            return
+        self._say(self.user_msg, "")
+        cookie = self._current(COOKIE_KEY, self.cookie_var)
+        ok, _, message = clean_cookie(cookie)
+        if not ok:
+            self._say(self.cookie_msg, message, good=False)
             return
         self.test_btn.state(["disabled"])
-        self._say(self.feed_msg, "Testing...")
+        self._say(self.cookie_msg, "Testing...")
         events = self._events
 
         def work():
             try:
-                result = test_feed(url)
+                result = test_login(username, cookie)
             except Exception as exc:
                 result = (False, f"The test failed ({type(exc).__name__}).")
             events.put(("test", result))
@@ -850,7 +832,7 @@ class SetupWindow:
                 if kind == "test":
                     ok, message = payload
                     self.test_btn.state(["!disabled"])
-                    self._say(self.feed_msg, message, good=ok)
+                    self._say(self.cookie_msg, message, good=ok)
                 elif kind == "model":
                     ok, message = payload
                     self.model_bar.stop()
@@ -867,17 +849,6 @@ class SetupWindow:
         """Validate the fields. Returns ({key: value}, ok); messages are shown
         on the fields. A missing archive folder is created only after `confirm`."""
         values, ok = {}, True
-        if not self._locked(FEED_KEY):
-            text = self.feed_var.get().strip()
-            if text:
-                valid, normalized, message = validate_feed_url(text)
-                if valid:
-                    values[FEED_KEY] = normalized
-                else:
-                    self._say(self.feed_msg, message, good=False)
-                    ok = False
-            else:
-                values[FEED_KEY] = ""
         if not self._locked(ARCHIVE_KEY):
             text = clean_archive_path(self.archive_var.get())
             if text:
@@ -902,7 +873,19 @@ class SetupWindow:
             else:
                 values[ARCHIVE_KEY] = ""
         if not self._locked(USER_KEY):
-            values[USER_KEY] = self.user_var.get().strip().lstrip("/").removeprefix("u/")
+            valid, name, message = clean_username(self.user_var.get())
+            if valid:
+                values[USER_KEY] = name
+            else:
+                self._say(self.user_msg, message, good=False)
+                ok = False
+        if not self._locked(COOKIE_KEY):
+            valid, cookie, message = clean_cookie(self.cookie_var.get())
+            if valid:
+                values[COOKIE_KEY] = cookie
+            else:
+                self._say(self.cookie_msg, message, good=False)
+                ok = False
         return values, ok
 
     def save(self):

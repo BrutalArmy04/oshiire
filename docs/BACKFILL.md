@@ -1,4 +1,4 @@
-# Backfill: getting at saves the RSS feed can't reach
+# Backfill: getting at saves the saved list can't reach
 
 ## The symptom
 
@@ -13,9 +13,8 @@ tomorrow after saving twenty more posts and it will still say `downloaded=0`.
 
 What has happened is that your Reddit **saved listing has hit its ceiling** —
 roughly 1,000 items. Reddit keeps accepting new saves, but they stop appearing
-in the listing, and the private RSS feed that `ingest.py` reads is a view onto
-that same listing. So the feed keeps returning the same old posts it has always
-returned, Oshiire correctly recognises every one of them as already handled, and
+in the listing, and that listing is exactly what `ingest.py` reads. So it keeps
+returning the same old posts it has always returned, Oshiire correctly recognises every one of them as already handled, and
 reports that it downloaded nothing. It is telling the truth. The problem is
 upstream of it.
 
@@ -90,7 +89,7 @@ logged-out requests, and every row of this sweep is an old.reddit HTML fetch
 back as the login wall.
 
 Set it as described in
-[SETUP.md → Gallery posts / Reddit login cookie](SETUP.md#gallery-posts--reddit-login-cookie)
+[SETUP.md → Reddit login cookie](SETUP.md#reddit-login-cookie)
 — briefly: devtools →
 Network → any logged-in `old.reddit.com` request → Request Headers → copy the
 whole `Cookie:` value into `REDDIT_SESSION_COOKIE`. It is a secret; whoever
@@ -479,7 +478,7 @@ more reach:
         ↓
    older saves become visible in the listing again
         ↓
-   the RSS feed starts returning things it couldn't before
+   the saved list starts showing things it couldn't before
         ↓
    ingest captures them  →  they become "provably captured"
         ↓
@@ -506,7 +505,7 @@ step:
 | 1 | `backfill.py --limit 500` | Chews through the next slice of history |
 | 2 | `export_unsave_list.py` | Refreshes the whitelist with everything newly captured |
 | — | 120s cooldown | Both halves hit Reddit on one rate-limit budget; back-to-back arrives pre-throttled |
-| 3 | `ingest.py` | Ordinary RSS ingest of recent saves |
+| 3 | `ingest.py` | Ordinary ingest of recent saves (walks the logged-in saved list) |
 | 4 | `imagemeta.py warm` | Hashes what ingest just downloaded, so review launches instantly |
 | 5 | `hash_index.py build` | Re-indexes the archive, catching hand-filed images |
 

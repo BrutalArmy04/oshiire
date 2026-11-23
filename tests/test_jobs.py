@@ -354,18 +354,38 @@ class AvailabilityTest(unittest.TestCase):
         self.assertNotIn(self.COOKIE_SECRET, reason)
 
     # -- ingest --------------------------------------------------------------
-    def test_ingest_needs_feed_url(self):
-        self._write_env(REDDIT_SAVED_FEED_URL="")
+    def test_ingest_needs_a_username(self):
+        self._write_env(REDDIT_USERNAME="", REDDIT_SESSION_COOKIE=self.COOKIE_SECRET)
         ok, reason = jobs.ingest_available()
         self.assertFalse(ok)
-        self.assertTrue(reason)
+        self.assertIn("username", reason)
+        self.assertIn("Settings -> App", reason)
         self._assert_no_secret(reason)
 
-    def test_ingest_ok_when_feed_set(self):
-        self._write_env(REDDIT_SAVED_FEED_URL=self.FEED_SECRET)
+    def test_ingest_needs_a_login_cookie(self):
+        self._write_env(REDDIT_USERNAME="some_user", REDDIT_SESSION_COOKIE="")
+        ok, reason = jobs.ingest_available()
+        self.assertFalse(ok)
+        self.assertIn("login cookie", reason)
+        self.assertIn("Settings -> App", reason)
+        self._assert_no_secret(reason)
+
+    def test_ingest_ok_with_username_and_cookie(self):
+        self._write_env(REDDIT_USERNAME="some_user", REDDIT_SESSION_COOKIE=self.COOKIE_SECRET)
         ok, reason = jobs.ingest_available()
         self.assertTrue(ok)
         self.assertEqual(reason, "")
+
+    def test_the_old_feed_url_alone_no_longer_enables_ingest(self):
+        self._write_env(REDDIT_SAVED_FEED_URL=self.FEED_SECRET)
+        ok, reason = jobs.ingest_available()
+        self.assertFalse(ok)
+        self._assert_no_secret(reason)
+
+    def test_ingest_steps_are_labelled_ingest_in_every_pipeline(self):
+        labels = [step.label for step in jobs.ingest_steps()] +                  [step.label for step in jobs.backfill_steps(10)]
+        self.assertEqual(labels.count("Ingest"), 2)
+        self.assertFalse(any("RSS" in label for label in labels))
 
     # -- backfill, each reason branch in order -------------------------------
     def test_backfill_missing_csv(self):

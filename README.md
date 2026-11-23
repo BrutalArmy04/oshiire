@@ -4,14 +4,16 @@
 [![Download for Linux](https://img.shields.io/badge/Download_for-Linux-E95420?style=for-the-badge)](https://github.com/BrutalArmy04/oshiire/releases/latest/download/Oshiire-Linux.tar.gz)
 
 A local, single-user pipeline that archives saved anime-style artwork from a
-Reddit account. It reads a private Reddit "saved" RSS feed, downloads the
+Reddit account. It reads your logged-in Reddit "saved" list, downloads the
 images, guesses the character(s) via post metadata and a local AI tagger as a
 fallback, and presents each image in a small web UI for human approve/edit/
 reject before filing it into a sorted personal archive.
 
 Everything runs locally. No image, title, or metadata is ever sent to a third
-party — the only outbound network calls are to Reddit itself (to read the
-feed, fetch post pages, and download images).
+party — the only outbound network calls are to Reddit itself (to read your
+saved list, fetch post pages, and download images). It signs in with a login
+cookie you copy from your browser once; that cookie expires, and the
+[setup guide](docs/SETUP.md#reddit-login-cookie) shows how to refresh it.
 
 ## Get started
 
@@ -55,13 +57,14 @@ Fedora 29+). On Linux Oshiire opens in your web browser.
   menu or app menu entry. (The AI model sits in the Hugging Face cache,
   `.cache/huggingface` in your home folder; delete it too if nothing else uses
   it.)
-- **Gallery posts** need a Reddit login cookie — see
-  [Gallery posts / Reddit login cookie](docs/SETUP.md#gallery-posts--reddit-login-cookie).
+- **Ingest needs your Reddit username and a login cookie** copied from your
+  browser, and the cookie expires — see
+  [Reddit login cookie](docs/SETUP.md#reddit-login-cookie).
 - **Nothing leaves your computer** except the requests to Reddit and the
   one-time model download.
 
 **Setup & usage in depth:** see [docs/SETUP.md](docs/SETUP.md).
-**Reaching saves the RSS feed can't see:** see [docs/BACKFILL.md](docs/BACKFILL.md).
+**Reaching saves the saved list can't show:** see [docs/BACKFILL.md](docs/BACKFILL.md).
 
 ## Using it
 
@@ -75,7 +78,7 @@ window.
 
 Everything is driven from the **home menu**, no terminal:
 
-- **Coming in** — **Ingest** (fetch new saves from your feed), **Backfill**
+- **Coming in** — **Ingest** (fetch new saves from your saved list), **Backfill**
   (work through older saves from the data export, a batch at a time, with a
   Stop button), and the big **Review** door (approve / fix / reject each image
   before it's filed). AI tagging runs automatically at the end of Ingest and
@@ -101,7 +104,8 @@ ingest ─┬─ auto-tag (metadata) → AI fallback → human review → resolv
 backfill ┘ (full history, via CSV export + perceptual-hash dedup)
 ```
 
-Two ingesters feed one pipeline. `ingest.py` reads the recent RSS feed;
+Two ingesters feed one pipeline. `ingest.py` walks your logged-in saved list
+(newest first, stopping where it meets posts it already has);
 `backfill.py` sweeps the complete saved history from Reddit's data export,
 using a perceptual-hash index of the archive to tell what you already own from
 what is genuinely new. Everything after that point is shared.
@@ -210,16 +214,15 @@ browser steps that free headroom in Reddit's capped saved listing.
   exercised on 3.14, so anything older is untested and unsupported. 3.13+ needs
   one extra install step — see the numpy note in
   [docs/SETUP.md](docs/SETUP.md).
-- **Ingestion:** `feedparser` (parses the saved-posts RSS/Atom feed) +
-  `requests` (the feed itself, read cookieless from `www.reddit.com`, and
-  image downloads) + `curl_cffi` (pinned; the Chrome-impersonated transport,
-  isolated in `redditclient.py`, that the `old.reddit.com` HTML fetches go
-  through — old.reddit login-walls anything whose TLS/HTTP2 fingerprint isn't
-  a real browser's, so a session cookie alone doesn't get through). Reddit
-  disabled self-serve API app creation, so this project deliberately does not
-  use `praw` or the Data API — the private saved-posts RSS feed is the only
-  way left to read a saved list without going through Reddit's
-  third-party-app approval process.
+- **Ingestion:** the standard library's `html.parser` (reads the logged-in
+  `old.reddit.com` saved list) + `requests` (image downloads) + `curl_cffi`
+  (pinned; the Chrome-impersonated transport, isolated in `redditclient.py`,
+  that every `old.reddit.com` HTML fetch goes through — old.reddit blocks
+  anything whose TLS/HTTP2 fingerprint isn't a real browser's, so a session
+  cookie alone doesn't get through). Reddit disabled self-serve API app
+  creation and retired the private saved-posts RSS feed on 2026-11-13, so this
+  project deliberately does not use `praw` or the Data API: it reads the same
+  saved list you see in your browser, signed in with your own login cookie.
 - **AI tagger:** `dghs-imgutils` (WD14) + `onnxruntime`, local inference only.
 - **Review/resolve UI:** `gradio` (pinned to 6.19.0).
 - **Config:** `python-dotenv`.
@@ -295,13 +298,11 @@ Built since the first release:
 
 ## Known limitations
 
-- The RSS feed is a rolling window of recent saves (~25 by default, ~100 with
-  `&limit=100`) with no pagination, and Reddit's saved *listing* itself caps out
-  at ~1,000 items — past which new saves are stored but never surface in either.
-  **Both are worked around rather than open:** `backfill.py` reaches the full
-  history through the data export, and the **Free up saved space** page (under
-  **Manage**) drives the drain that frees listing headroom so the feed keeps
-  working. What remains is that the workaround is a periodic chore rather than
+- Reddit's saved *list* caps out at ~1,000 items — past which new saves are
+  stored but never surface in it. **That is worked around rather than open:**
+  `backfill.py` reaches the full history through the data export, and the
+  **Free up saved space** page (under **Manage**) drives the drain that frees
+  listing headroom so ingest keeps finding new saves. What remains is that the workaround is a periodic chore rather than
   automatic — the export has to be requested by hand, the sweep is deliberately
   slow to stay polite, and draining is a browser step you supervise. See
   [docs/BACKFILL.md](docs/BACKFILL.md).
@@ -311,7 +312,7 @@ Built since the first release:
 
 ## Roadmap
 
-- **A second Reddit account.** Read a second saved feed into the same archive,
+- **A second Reddit account.** Read a second saved list into the same archive,
   deduplicated against the one namespace the manifest, tombstones, and hash
   index already share.
 - **Upscaling under-sized art.** Flag, and optionally upscale, archived images

@@ -20,6 +20,7 @@ staging/
 archive/
 manifest.json
 *.manifest.json
+manifest.backup*.json
 !manifest.example.json
 
 # Personal archive layout (describes YOUR whole collection). Templates are

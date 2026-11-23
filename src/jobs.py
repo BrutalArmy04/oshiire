@@ -50,7 +50,7 @@ class Step:
 
 
 def ingest_steps():
-    """The RSS ingest pipeline plus the hash/tag tail: fetch, hash, tag."""
+    """The ingest pipeline plus the hash/tag tail: fetch, hash, tag."""
     return [
         Step("Ingest", [_script("ingest.py")], "stop"),
         Step("Hash new images", [_script("imagemeta.py"), "warm"], "continue"),
@@ -59,13 +59,13 @@ def ingest_steps():
 
 
 def backfill_steps(limit, cooldown=120):
-    """The full maintenance cycle -- backfill sweep, cooldown, RSS ingest,
+    """The full maintenance cycle -- backfill sweep, cooldown, ingest,
     hash, index, AI tag."""
     return [
         Step("Backfill", [_script("backfill.py"), "--limit", str(limit)], "stop"),
         Step("Export unsave whitelist", [_script("export_unsave_list.py")], "stop"),
         Step(f"Cooling down {cooldown}s", None, "stop", cooldown_s=cooldown),
-        Step("RSS ingest", [_script("ingest.py")], "stop"),
+        Step("Ingest", [_script("ingest.py")], "stop"),
         Step("Hash new images", [_script("imagemeta.py"), "warm"], "continue"),
         Step("Index archive", [_script("hash_index.py"), "build"], "continue"),
         Step("AI tagging", [_script("ai_tag.py")], "continue"),
@@ -404,9 +404,12 @@ def _backfill_at_data_root():
 
 
 def ingest_available():
-    """(ok, reason). Ingest needs the saved-feed URL."""
-    if not config.get("REDDIT_SAVED_FEED_URL").strip():
-        return (False, "Reddit feed URL isn't set up.")
+    """(ok, reason). Ingest reads the logged-in saved listing, so it needs the
+    Reddit username and login cookie. Reasons never include a secret value."""
+    if not config.get("REDDIT_USERNAME").strip():
+        return (False, "Your Reddit username isn't set up. Add it in Settings -> App.")
+    if not config.get("REDDIT_SESSION_COOKIE").strip():
+        return (False, "Your Reddit login cookie isn't set up. Add it in Settings -> App.")
     return (True, "")
 
 

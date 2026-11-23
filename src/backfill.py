@@ -5,7 +5,7 @@ post already owned -- first for free via manifest membership, then via the
 perceptual-hash index of the local archive -- and routes only the genuine gaps
 into the normal `pending_review` pipeline for later review.
 
-This is NOT `ingest.py`. `ingest.py` reads the recent RSS feed; this reads the
+This is NOT `ingest.py`. `ingest.py` walks the recent saved list; this reads the
 whole historical CSV (id + permalink only) and must therefore fetch each post's
 `old.reddit.com` HTML permalink to discover its image(s), timestamp being
 irrelevant here.
@@ -164,7 +164,7 @@ class RateLimited(Exception):
 # Reddit HTML fetch + extraction (read-only network reads)
 #
 # CSV rows carry only (bare id, permalink), so -- unlike ingest.py, which gets
-# the image URL straight from the RSS entry -- we fetch the post's HTML to find
+# the image URL straight from the saved-list row -- we fetch the post's HTML to find
 # its image(s). These helpers mirror the proven approach in calibrate.py; the
 # `.json`/api endpoints 403 for our UA, but the plain old.reddit HTML works.
 # --------------------------------------------------------------------------- #

@@ -191,6 +191,19 @@ class SaveSetupTest(_Sandbox):
         USER: "",
     }
 
+    def test_new_keys_save_alongside_a_leftover_feed_url(self):
+        """Ingest no longer reads REDDIT_SAVED_FEED_URL, but an old config.env /
+        .env that still has one must keep loading, and its token stays redacted."""
+        self.write(self.config_env,
+                   f"{FEED}=https://www.reddit.com/saved.rss?feed=oldtoken1234&user=me\n")
+        config.save_setup({USER: "some_user", COOKIE: "reddit_session=abc123456789; over18=1"})
+        self.assertEqual(config.get(USER), "some_user")
+        self.assertEqual(config.get(COOKIE), "reddit_session=abc123456789; over18=1")
+        self.assertIn("feed=oldtoken1234", config.get(FEED))
+        secrets = config.secret_values()
+        self.assertIn("oldtoken1234", secrets)
+        self.assertIn("abc123456789", secrets)
+
     def test_round_trip_is_byte_identical(self):
         config.save_setup(self.CASES)
         raw = dotenv_values(self.config_env, interpolate=False)

@@ -8,10 +8,12 @@ them in a local web interface for quick human approval before sending them to a
 final, sorted local or cloud archive.
 
 > **Ingestion note (updated):** Reddit disabled self-serve API app creation, so
-> this project reads the account's **private saved-posts RSS feed** (via
-> `feedparser`) instead of the Data API / `praw`. The feed is read-only and
-> returns only recent saves. See `CLAUDE.md` for the binding technical rules;
-> the phases below describe the original design intent.
+> this project does not use the Data API / `praw`. It first read the account's
+> private saved-posts RSS feed; Reddit retired that feed on 2026-11-13, so it now
+> reads the account's **logged-in `old.reddit.com` saved listing** (a login
+> cookie plus the username, parsed with the standard library). The listing is
+> read-only and shows only the newest ~1,000 saves. See `CLAUDE.md` for the
+> binding technical rules; the phases below describe the original design intent.
 
 ## 1. System Architecture & Workflow
 The system is designed around a Human-in-the-Loop (HITL) Staging Architecture,
@@ -19,7 +21,7 @@ meaning automated processing and manual review are separated to ensure 100%
 accuracy in the final archive.
 
 ### Phase 1: Ingestion (The Downloader)
-- **Action:** The script reads the user's private saved RSS feed and extracts
+- **Action:** The script reads the user's logged-in saved list and extracts
   direct image URLs.
 - **Storage:** Images are downloaded into a temporary Staging Folder (the Inbox).
 - **Ledger:** A `manifest.json` file is created/updated in the Staging folder to
@@ -55,9 +57,11 @@ character using a two-step "Fast-Track" process:
   directly to the cloud and delete the local copy to save hard drive space.
 
 ## 2. The Technology Stack
-- **Reddit Extraction:** private saved-posts RSS feed via `feedparser` +
-  `requests` for image downloads. (The original `praw`/Data-API plan is no
-  longer viable due to Reddit's app-creation lockdown.)
+- **Reddit Extraction:** the logged-in `old.reddit.com` saved listing (stdlib
+  `html.parser`, over a Chrome-impersonated `curl_cffi` transport, with the
+  account's login cookie) + `requests` for image downloads. (The original
+  `praw`/Data-API plan is no longer viable due to Reddit's app-creation
+  lockdown, and the saved RSS feed that replaced it was retired on 2026-11-13.)
 - **AI Vision Model:** WD14 Tagger (Waifu Diffusion), accessed via `imgutils`.
 - **User Interface:** `gradio` (build web interfaces in pure Python).
 - **Distribution/Packaging:** `PyInstaller` — optional, final step only.
@@ -69,8 +73,9 @@ character using a two-step "Fast-Track" process:
 - **Original Characters (OCs) & New IP:** The AI cannot recognize characters it
   wasn't trained on. *Solution:* rely on metadata scraping, or route to an
   "Unknown" folder for manual tagging in the UI.
-- **Feed Limitations:** The saved RSS feed returns only recent saves, not full
-  history, and cannot be used to unsave posts. *Solution:* poll incrementally
+- **Listing Limitations:** The saved list shows only the newest ~1,000 saves, not
+  full history, the login cookie it needs expires, and it cannot be used to
+  unsave posts. *Solution:* poll incrementally
   and rely on manifest-based dedup so re-seen posts are skipped.
 - **Non-image posts:** Not every saved post is an image (text, links, galleries).
   *Solution:* handle/skip gracefully rather than crashing.

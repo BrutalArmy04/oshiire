@@ -1,7 +1,7 @@
 """Build the safe-to-unsave whitelist for the browser bulk-unsave userscript.
 
 Reddit's saved list has a ~1,000-item listing ceiling. Once it's full, new saves
-are stored but never surface in the list or the RSS feed, so Oshiire's ingest
+are stored but never surface in the saved list, so Oshiire's ingest
 front door is wedged shut. The fix is to bulk-*unsave* only the posts Oshiire has
 PROVABLY captured, freeing headroom. This script builds that whitelist; the
 companion `oshiire_unsave.user.js` clicks the unsave links in the owner's own

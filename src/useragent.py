@@ -2,7 +2,7 @@
 
 Every component that talks to Reddit identifies itself the same way, per
 Reddit's API etiquette guidelines: a product token, a short description, and a
-contact. Four callers need that string -- `ingest.py` (RSS feed + image
+contact. Four callers need that string -- `ingest.py` (saved-list walk + image
 downloads + gallery permalinks), `backfill.py` (the CSV sweep), `calibrate.py`
 (the threshold measurement run) and `tombstones.py` (fetching a placeholder
 card to sign) -- so it lives here rather than being retyped in each.
@@ -51,26 +51,31 @@ class RedditAuthWall(Exception):
     """Raised when a Reddit fetch returns the login wall instead of content."""
 
 
-def build_headers(product: str = DEFAULT_PRODUCT, *, over18: bool = False) -> dict:
+def build_headers(product: str = DEFAULT_PRODUCT, *, over18: bool = False,
+                  cookie: str | None = None) -> dict:
     """Outbound headers for a Reddit request: User-Agent plus any Cookie.
 
     REDDIT_SESSION_COOKIE holds a logged-in cookie string copied from a
     browser (e.g. "reddit_session=..."). old.reddit.com began requiring login
     for its logged-out HTML/feed endpoints at the end of July 2026, so the
-    CSV-sweep and gallery permalink fetches need this to receive real pages
+    saved-list walk, CSV-sweep and gallery permalink fetches need this to receive real pages
     instead of the login wall. Read at call time rather than import time so a
     caller that loads .env after importing this still picks it up.
 
     `over18=True` prepends the `over18=1` consent cookie, which is what makes
     an NSFW permalink render instead of the interstitial. The Cookie header is
     omitted entirely when neither piece applies.
+
+    `cookie` overrides REDDIT_SESSION_COOKIE for one call: the setup window's
+    Test button tries a cookie the user has typed but not saved yet. Still the
+    only place the cookie turns into a header.
     """
     headers = {"User-Agent": build_user_agent(product)}
 
     cookies = []
     if over18:
         cookies.append("over18=1")
-    session = os.environ.get("REDDIT_SESSION_COOKIE", "").strip()
+    session = (os.environ.get("REDDIT_SESSION_COOKIE", "") if cookie is None else cookie).strip()
     if session:
         cookies.append(session)
     if cookies:

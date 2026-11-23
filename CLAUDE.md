@@ -1,7 +1,7 @@
 # Oshiire
  
 A local, single-user pipeline that archives saved anime-style artwork from the
-owner's Reddit account. It reads the owner's private Reddit "saved" RSS feed,
+owner's Reddit account. It reads the owner's logged-in Reddit "saved" listing,
 downloads the images, guesses the character(s) via post metadata (fast path) and
 a local AI tagger (fallback), then presents each image in a small web UI for
 human approve/edit/reject before filing it into a sorted archive.
@@ -9,28 +9,55 @@ Human-in-the-loop: nothing reaches the final archive without explicit approval.
  
 ## Ingestion approach (important — read before writing ingestion code)
 - Reddit disabled self-serve API app creation, so this project does NOT use
-  `praw` or the Data API. Ingestion is via Reddit's private saved-posts RSS/Atom
-  feed, parsed with `feedparser`.
-- The feed URL is a secret (it contains a per-account token). It lives only in
-  `.env` as `REDDIT_SAVED_FEED_URL` and is loaded via python-dotenv. Never
-  hardcode, print, log, or commit it.
-- The feed is read from the `www.reddit.com` host, cookieless. At the end of
-  July 2026 `old.reddit.com` began answering logged-out requests with its login
-  page, so the old.reddit form of the feed URL returns the login wall instead
-  of the saves; `ingest._normalize_feed_host` rewrites the host and
-  `useragent.is_login_wall` detects the wall (it arrives as a normal 200, so a
-  status code cannot).
-- old.reddit HTML pages are a separate, walled path. The gallery-permalink
-  fetch, the backfill sweep and `calibrate.py` all read server-rendered
-  old.reddit HTML, and all three need `REDDIT_SESSION_COOKIE` (see Security
-  rules) sent over a Chrome-impersonated transport. Every one of them goes
-  through `redditclient.py`, which is the ONLY module allowed to import
-  `curl_cffi`; the cookie is what defeats the wall, and the descriptive
-  User-Agent from `useragent.py` still rides on top.
-- The feed is READ-ONLY. The app cannot unsave, vote, or write anything back to
-  Reddit. "Unsave after archiving" is explicitly OUT OF SCOPE.
-- The feed returns only recent saves, not full history. Design for incremental
-  polling ("catch new saves"), not a one-shot full-history dump.
+  `praw` or the Data API. Reddit also retired the private saved-posts RSS feed
+  on 2026-11-13, so ingestion reads the LOGGED-IN old.reddit saved listing,
+  `https://old.reddit.com/user/<REDDIT_USERNAME>/saved/`: server-rendered HTML,
+  parsed with the stdlib `html.parser`. `savedlisting.py` owns the markup
+  knowledge (`parse_listing`, `classify_row`, `fetch_page`, `auth_message`);
+  `ingest.walk_saved` walks it. No new dependency.
+- It needs BOTH `REDDIT_USERNAME` and `REDDIT_SESSION_COOKIE` (see Security
+  rules), sent over `redditclient.py`'s Chrome-impersonated transport like every
+  other old.reddit HTML fetch. `REDDIT_SAVED_FEED_URL` is no longer read: an old
+  one in `.env` / `data/config.env` is tolerated (and its token still redacted)
+  so existing files don't break, and is otherwise ignored.
+- **The session expires, and the failure is not the login wall.** An expired or
+  wrong cookie makes the listing answer HTTP 403 "you are not allowed to do
+  that". A good session is recognised by the logout form/link in the page; a 403
+  that HAS the marker is a login for a different account than
+  `REDDIT_USERNAME`. `ingest.py` stops with a message and exit 1 for either (and
+  for a 200 with no marker, or the login wall); `savedlisting.auth_message`
+  words it, shared with the setup window's Test button.
+- **The walk:** 25 posts a page, newest SAVE first (so post ids are not in order
+  and `data-timestamp` is the post's creation time, not the save time). Follow
+  the `.next-button a` href — only ever to old.reddit.com, because the cookie
+  rides on every request. Stop at the first page with NO unknown `post_id`, at
+  the last page (no next button), or at 45 pages. Sleep 3s between pages, save
+  the manifest after each page, back off 30/60/120/240s on a 429 or network
+  error and then stop with exit 1. `data-score` drifts and `data-num-crossposts`
+  is a count, neither a flag: don't read them.
+- **Classification** (`savedlisting.classify_row`), galleries first and never by
+  domain (a gallery's `data-domain` is `old.reddit.com`): gallery
+  (`data-is-gallery == 'true'` or `/gallery/` in `data-url`) → the gallery flow;
+  self (`self.<sub>` domain / relative url) → `text_or_link_post`; `v.redd.it` →
+  `video_post`; `i.redd.it` or an image extension on any host → download;
+  anything else → `unsupported_link_type`. `data-permalink` is relative and may
+  hold raw non-ASCII; the manifest stores `https://www.reddit.com` + it.
+  Saved comments (`t1_`) and promoted posts are dropped. A crosspost is a post
+  with its own id and image whose `data-subreddit` is the CROSSPOSTING sub; the
+  original's sub is `data-crosspost-root-subreddit`, kept as the manifest field
+  `crosspost_root_subreddit` (nothing reads it yet).
+- old.reddit HTML pages are walled for everything: the saved listing, the
+  gallery-permalink fetch, the backfill sweep and `calibrate.py` all read
+  server-rendered old.reddit HTML and need `REDDIT_SESSION_COOKIE` over the
+  impersonated transport. Every one of them goes through `redditclient.py`,
+  which is the ONLY module allowed to import `curl_cffi`; the cookie is what
+  defeats the wall, and the descriptive User-Agent from `useragent.py` still
+  rides on top.
+- The listing is READ-ONLY. The app cannot unsave, vote, or write anything back
+  to Reddit. "Unsave after archiving" is explicitly OUT OF SCOPE.
+- Reddit shows only the newest ~1,000 saves, and ingest walks only until it
+  meets posts it already has. Design for incremental polling ("catch new
+  saves"), not a one-shot full-history dump.
 ## Tech stack
 - Python 3.14. This is what the project is developed and run on — `Oshiire.bat`
   invokes a `.venv-win` built with it (pythonw for the app, the sibling
@@ -40,8 +67,8 @@ Human-in-the-loop: nothing reaches the final archive without explicit approval.
   anywhere is `int.bit_count()`, 3.10+); the floor is an untested-below line,
   not a technical one. On 3.13+ the numpy pin needs an override — see the numpy
   gotcha in docs/SETUP.md, which therefore always applies here.
-- Ingestion: `feedparser` (parses the saved RSS/Atom feed) + `requests` (the
-  www feed and image downloads) + `curl_cffi` (pinned; the Chrome-impersonated
+- Ingestion: stdlib `html.parser` (the saved listing, in `savedlisting.py`) +
+  `requests` (image downloads) + `curl_cffi` (pinned; the Chrome-impersonated
   transport in `redditclient.py` for old.reddit HTML — plain `requests` gets
   the login wall even with a valid cookie, because the deciding factor is the
   TLS/HTTP2 fingerprint)
@@ -120,7 +147,7 @@ configs against the cwd. Modules:
   with `python -m pip freeze --all`, then drop pip and the dev-only chain
   (playwright, pyee, greenlet, fonttools) and re-add the platform markers —
   the steps are in the file's header.
-- `SOURCE_ONLY` in `build_release.py` (bchlib, proxy_tools, sgmllib3k) have no
+- `SOURCE_ONLY` in `build_release.py` (bchlib, proxy_tools) have no
   3.14 wheel; the workflow builds them from source first (manylinux_2_28 on
   Linux, so the Linux release runs on glibc 2.28 and newer).
 - **User-site isolation:** the runtime must never import from a per-user
@@ -167,37 +194,42 @@ configs against the cwd. Modules:
   Nothing else in the repo is exposed — see `_static_paths()` in `review.py`.
 
 ## Security rules (do not violate)
-- There are TWO secrets: `REDDIT_SAVED_FEED_URL` (a per-account feed token)
-  and `REDDIT_SESSION_COOKIE` (a logged-in cookie string copied from the
-  browser — whoever holds it is logged in as the account owner, so it is the
-  more dangerous of the two). They can live in `.env` or in
+- There are TWO secrets: `REDDIT_SESSION_COOKIE` (a logged-in cookie string
+  copied from the browser — whoever holds it is logged in as the account owner,
+  so it is the more dangerous of the two, and ingest cannot run without it) and
+  the legacy `REDDIT_SAVED_FEED_URL` (a per-account feed token, no longer read
+  by anything but still redacted if an old file has one). `REDDIT_USERNAME` is
+  required too but is not a secret. They can live in `.env` or in
   `data/config.env` (written by the setup window via `config.save_setup`);
   `config.py` merges env > .env > data/config.env. In full, highest first:
   the process environment, `<data root>/.env`, `<app folder>/.env` (skipped
   when it is the same file), `<data root>/data/config.env` — and config.env
-  contributes only the four `CONFIG_KEYS`. In a release the data root is the
-  per-user folder (see Releases), so a downloaded copy's cookie lives in a
-  `.env` the user creates there; the setup window never stores the cookie and
-  never writes a `.env`. `data/config.env` is 0600 on POSIX, gitignored, and
-  on `build_release.py`'s deny list. The archive folder may not be or contain
-  the app folder or the data root (`setup_window.validate_archive_dir`): it is
-  a gradio allowed path, and either would make `.env`/`config.env` servable.
-  Reference the feed URL as
-  `os.environ["REDDIT_SAVED_FEED_URL"]`. The cookie is used for requests in
-  exactly one place, `useragent.build_headers`, and callers pass the built
-  headers around rather than the value; `config.secret_values()` also reads
-  it, only to redact job output. Never inline or log either.
+  contributes only the four `CONFIG_KEYS`. The setup window asks for the
+  username and the cookie (masked, `Cookie:` prefix and quotes stripped,
+  `reddit_session=` required, messages never echo the value) and stores them in
+  `data/config.env`; it never writes a `.env`, and a value set in the
+  environment or a `.env` is shown read-only and never overwritten. In a release
+  the data root is the per-user folder (see Releases). `data/config.env` is
+  0600 on POSIX, gitignored, and on `build_release.py`'s deny list. The archive
+  folder may not be or contain the app folder or the data root
+  (`setup_window.validate_archive_dir`): it is a gradio allowed path, and either
+  would make `.env`/`config.env` servable. The cookie is used for requests in
+  exactly one place, `useragent.build_headers` (its optional `cookie=` argument
+  exists only so the setup window's Test button can try an unsaved value), and
+  callers pass the built headers around rather than the value;
+  `config.secret_values()` also reads it, only to redact job output. Never
+  inline or log either.
 - `.env`, `staging/`, `archive/`, and `manifest.json` are gitignored and must
   stay that way. If you add a new file holding secrets or account-derived data,
   add it to `.gitignore` in the same change.
-- Ship an `examples/.env.example` with an empty `REDDIT_SAVED_FEED_URL=` and an empty
+- Ship an `examples/.env.example` with an empty `REDDIT_USERNAME=` and an empty
   `REDDIT_SESSION_COOKIE=`, never a filled one.
 ## Architectural invariants
 - **`manifest.json` is the single source of truth.** The downloader and the UI
   never call each other directly — they communicate only via the manifest.
 - **Dedup is manifest-based.** Each saved post has a stable id; the downloader
   skips anything already in the manifest, so re-seeing an archived post in the
-  feed is a harmless no-op. Ingestion is idempotent. (This is what replaces
+  listing is a harmless no-op. Ingestion is idempotent. (This is what replaces
   unsaving.)
 - **All manifest writes are atomic**: write to a temp file, then `os.replace()`
   — always via `fsutil.replace()`, which retries briefly on Windows while
@@ -225,7 +257,11 @@ built in Slice 0, extended by later slices:
   entries this is the shared parent id, not the entry's own dict key.
 - `title` — post title.
 - `subreddit` — source subreddit.
-- `permalink` — the Reddit post URL.
+- `permalink` — the Reddit post URL (`https://www.reddit.com` + the listing's relative
+  `data-permalink`).
+- `crosspost_root_subreddit` — only on a crosspost: the ORIGINAL post's
+  subreddit (`data-crosspost-root-subreddit`; `subreddit` stays the crossposting
+  one). Absent otherwise. Nothing reads it yet.
 - `image_url` — the direct reddit-hosted image (i.redd.it etc.). What Slice 0
   downloads. (Note: the earlier `reddit_image_url`/`source_link` split was NOT
   built — Slice 0 shipped a single `image_url`. In practice the "original
@@ -618,13 +654,14 @@ Hard rules:
   folder — that needs rclone/API confirmation, out of scope.
 - The archive path always comes from `.env`; nothing about it is hardcoded.
 ## Build order (build vertically, one slice per session)
-0. Read `REDDIT_SAVED_FEED_URL`, fetch + parse the saved feed with feedparser,
+0. Walk the logged-in saved listing (`REDDIT_USERNAME` + `REDDIT_SESSION_COOKIE`;
+   see "Ingestion approach"),
    extract the direct image + metadata per the manifest schema above, download
    from `reddit_image_url` into `staging/`, write entries as `pending_review`.
    Record (don't act on) `source_link`. Non-image/link posts get a `skipped`
    entry with a `skip_reason`. Gallery posts are expanded into one
    `pending_review` entry per image (see the manifest schema's `image_index`
-   note above) — the RSS feed has no per-image data, so this requires an
+   note above) — the saved listing has no per-image data, so this requires an
    extra fetch of the post's plain `old.reddit.com` permalink HTML (Reddit's
    `.json`/API endpoints return 403 for this project's User-Agent; the HTML
    permalink works, with `Cookie: over18=1` needed for NSFW posts and, since
