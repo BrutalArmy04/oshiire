@@ -4,6 +4,11 @@ All notable changes to Oshiire are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- In Resolve, an image with no character could not be filed under an existing character folder ("This entry has no character to alias"); the button now files it there.
+
 ## [1.0.1] - 2026-10-17
 
 ### Changed

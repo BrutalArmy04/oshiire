@@ -164,6 +164,10 @@ def _character_tag(entry):
     return char_list[0] if char_list else None
 
 
+MAP_CHARACTER_LABEL = "Map alias to selected character"
+FILE_UNDER_CHARACTER_LABEL = "File under selected character"
+
+
 def _propose_shortname(tag_name):
     return propose_shortname_code(tag_name, shortname_entries)
 
@@ -298,7 +302,8 @@ def _render_current(status=""):
         char_tag or "",
         gr.update(visible=is_character_flag and bool(char_tag)),
         gr.update(choices=franchise_characters, value=None),
-        gr.update(visible=is_character_flag and bool(char_tag)),
+        gr.update(visible=is_character_flag,
+                  value=MAP_CHARACTER_LABEL if char_tag else FILE_UNDER_CHARACTER_LABEL),
         gr.update(visible=is_shortname_flag),
         proposed_code,
         undo_update,
@@ -528,18 +533,37 @@ def on_create_character_folder(folder_name_text):
 
 
 def on_map_character_alias(selected_character):
+    """Two meanings, one button, picked by whether the entry has a character tag.
+
+    Tagged: record `tag -> selected_character` as a character alias in layout.json,
+    so this name (and every future image tagged with it) files itself.
+
+    Untagged (an empty character_guess, which is what "No subfolder for an untagged
+    image" means): there is no name to alias, so the image is filed under the
+    selected existing character instead -- THIS image's character_guess becomes
+    [selected_character]. No alias is written; nothing in layout.json changes. It
+    is a manifest-field action, so Undo restores the previous list exactly (an
+    empty list stays an empty list; an absent key goes back to absent)."""
     global last_action
     row = _current_row()
     if row is None or not selected_character:
         return _render_current("Pick a character first.")
     entry = row["entry"]
     char_tag = _character_tag(entry)
-    if not char_tag:
-        return _render_current("This entry has no character to alias.")
 
     folder_name, _ = _franchise_folder(entry)
     if not folder_name:
         return _render_current("Franchise isn't resolved yet -- resolve its folder first.")
+
+    if not char_tag:
+        prior = entry.get("character_guess")
+        entry["character_guess"] = [selected_character]
+        save_manifest(manifest)
+        last_action = {
+            "kind": "manifest_field", "post_id": row["post_id"], "field": "character_guess",
+            "prior_value": prior, "resolved_post_id": row["post_id"],
+        }
+        return _finish_resolution(row)
 
     snapshot = _snapshot_layout()
     save_character_alias(folder_name, char_tag, selected_character, layout)
@@ -751,7 +775,7 @@ def build_ui():
 
                     gr.Markdown("--- or ---")
                     existing_character_dropdown = gr.Dropdown(label="Map to existing character")
-                    map_character_btn = gr.Button("Map alias to selected character")
+                    map_character_btn = gr.Button(MAP_CHARACTER_LABEL)
 
                     gr.Markdown("--- or ---")
                     route_group_btn = gr.Button("Route to Others_Group (same-series group)")
